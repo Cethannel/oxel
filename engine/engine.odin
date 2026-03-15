@@ -982,7 +982,32 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 }
 
 @(private)
-init_imgui :: proc(engine: ^VulkanEngine) {
+init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
+	pool_sizes := [?]vk.DescriptorPoolSize {
+		{type = .SAMPLER, descriptorCount = 1000},
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = 1000},
+		{type = .SAMPLED_IMAGE, descriptorCount = 1000},
+		{type = .STORAGE_IMAGE, descriptorCount = 1000},
+		{type = .UNIFORM_TEXEL_BUFFER, descriptorCount = 1000},
+		{type = .STORAGE_TEXEL_BUFFER, descriptorCount = 1000},
+		{type = .UNIFORM_BUFFER, descriptorCount = 1000},
+		{type = .STORAGE_BUFFER, descriptorCount = 1000},
+		{type = .UNIFORM_BUFFER_DYNAMIC, descriptorCount = 1000},
+		{type = .STORAGE_BUFFER_DYNAMIC, descriptorCount = 1000},
+		{type = .INPUT_ATTACHMENT, descriptorCount = 1000},
+	}
+
+	pool_info: vk.DescriptorPoolCreateInfo
+	pool_info.sType = .DESCRIPTOR_POOL_CREATE_INFO
+	pool_info.flags = {.FREE_DESCRIPTOR_SET}
+	pool_info.maxSets = 1000
+	pool_info.poolSizeCount = len(pool_sizes)
+	pool_info.pPoolSizes = raw_data(pool_sizes[:])
+
+	imgui_pool: vk.DescriptorPool
+	vk.CreateDescriptorPool(engine.device.device, &pool_info, nil, &imgui_pool) or_return
+
+	return nil
 }
 
 immediate_submit :: proc(
