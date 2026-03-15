@@ -1,0 +1,1014 @@
+package engine
+
+import "core:c"
+import "core:flags"
+import "vendor:sdl3"
+import vk "vendor:vulkan"
+
+import "core:fmt"
+
+import "core:math"
+import "core:time"
+
+import vkb "../vkbootstrap/"
+
+import vma "../vma/"
+
+DeinitFunc :: proc(engine: ^VulkanEngine)
+
+FrameData :: struct {
+	command_pool:        vk.CommandPool,
+	main_command_buffer: vk.CommandBuffer,
+	swapchain_semaphore: vk.Semaphore,
+	render_fence:        vk.Fence,
+}
+
+AllocateImage :: struct {
+	image:        vk.Image,
+	image_view:   vk.ImageView,
+	allocation:   vma.Allocation,
+	image_extent: vk.Extent3D,
+	image_format: vk.Format,
+}
+
+FRAME_OVERLAP :: 2
+
+VulkanEngine :: struct {
+	deinitFuncs:                  [dynamic]DeinitFunc,
+	frame_number:                 int,
+	stop_rendering:               bool,
+	window_extent:                vk.Extent2D,
+	window:                       ^sdl3.Window,
+	instance:                     ^vkb.Instance,
+	device:                       ^vkb.Device,
+	surface:                      vk.SurfaceKHR,
+	is_initialized:               bool,
+	swapchain:                    ^vkb.Swapchain,
+	swapchain_images:             []vk.Image,
+	render_semaphores:            []vk.Semaphore,
+	swapchain_image_views:        []vk.ImageView,
+	swapchain_extent:             vk.Extent2D,
+	frames:                       [FRAME_OVERLAP]FrameData,
+	graphics_queue:               vk.Queue,
+	graphics_queue_family:        u32,
+	allocator:                    vma.Allocator,
+	draw_image:                   AllocateImage,
+	draw_extent:                  vk.Extent2D,
+	//
+	global_descriptor_allocator:  DescriptorAllocator,
+	draw_image_descriptors:       vk.DescriptorSet,
+	draw_image_descriptor_layout: vk.DescriptorSetLayout,
+	//
+	gradient_pipeline:            vk.Pipeline,
+	gradient_pipeline_layout:     vk.PipelineLayout,
+	// Imgui
+	imm_fence:                    vk.Fence,
+	imm_command_buffer:           vk.CommandBuffer,
+	imm_command_pool:             vk.CommandPool,
+}
+
+@(private)
+bEnableValidationLayers := true
+
+init :: proc() -> VulkanEngine {
+	engine := VulkanEngine {
+		frame_number   = 0,
+		window_extent  = {1700, 900},
+		stop_rendering = false,
+		window         = nil,
+		is_initialized = false,
+	}
+
+	assert(sdl3.Init(sdl3.InitFlags{.VIDEO}), "Failed to initalize SDL")
+
+	engine.window = sdl3.CreateWindow(
+		"VulkanEngine",
+		cast(c.int)engine.window_extent.width,
+		cast(c.int)engine.window_extent.height,
+		sdl3.WindowFlags{.VULKAN},
+	)
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {sdl3.DestroyWindow(engine.window)})
+
+	assert(init_vulkan(&engine) == nil, "Failed to initalize vulkan")
+
+	assert(init_swapchain(&engine) == nil, "Failed to initalize swapchain")
+
+	assert(init_commands(&engine) == .SUCCESS, "Failed to initalize commands")
+
+	assert(init_sync_structures(&engine) == .SUCCESS, "Failed to initalize sync features")
+
+	init_descriptors(&engine)
+
+	init_pipelines(&engine)
+
+	engine.is_initialized = true
+
+	return engine
+}
+
+run :: proc(engine: ^VulkanEngine) {
+	assert(engine.is_initialized, "Engine is not initalized")
+
+	e: sdl3.Event
+
+	quit := false
+
+	for (!quit) {
+		for (sdl3.PollEvent(&e)) {
+			#partial switch e.type {
+			case .QUIT:
+				quit = true
+			case .WINDOW_MINIMIZED:
+				engine.stop_rendering = true
+			case .WINDOW_RESTORED:
+				engine.stop_rendering = false
+			}
+		}
+
+		if (engine.stop_rendering) {
+			time.sleep(time.Microsecond * 100)
+			continue
+		}
+
+		draw(engine)
+	}
+}
+
+draw :: proc(engine: ^VulkanEngine) {
+	vk_assert(
+		vk.WaitForFences(
+			engine.device.device,
+			1,
+			&get_current_frame(engine).render_fence,
+			true,
+			1000000000,
+		),
+	)
+	assert(
+		vk.ResetFences(engine.device.device, 1, &get_current_frame(engine).render_fence) ==
+		.SUCCESS,
+	)
+
+	assert(get_current_frame(engine) != nil)
+	assert(engine.device != nil)
+	assert(engine.swapchain != nil)
+
+	swap_semaphore := get_current_frame(engine).swapchain_semaphore
+
+	swapchainImageIndex: u32
+	vk.AcquireNextImageKHR(
+		engine.device.device,
+		engine.swapchain.swapchain,
+		1000000000,
+		swap_semaphore,
+		0,
+		&swapchainImageIndex,
+	)
+
+	cmd := get_current_frame(engine).main_command_buffer
+
+	vk_assert(vk.ResetCommandBuffer(cmd, {}))
+
+	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
+
+	engine.draw_extent.width = engine.draw_image.image_extent.width
+	engine.draw_extent.height = engine.draw_image.image_extent.height
+
+
+	vk_assert(vk.BeginCommandBuffer(cmd, &cmd_begin_info))
+
+	transition_image(cmd, engine.draw_image.image, .UNDEFINED, .GENERAL)
+
+	draw_background(engine, cmd)
+
+	//transition the draw image and the swapchain image into their correct transfer layouts
+	transition_image(cmd, engine.draw_image.image, .GENERAL, .TRANSFER_SRC_OPTIMAL)
+	transition_image(
+		cmd,
+		engine.swapchain_images[swapchainImageIndex],
+		.UNDEFINED,
+		.TRANSFER_DST_OPTIMAL,
+	)
+
+	// execute a copy from the draw image into the swapchain
+	copy_image_to_image(
+		cmd,
+		engine.draw_image.image,
+		engine.swapchain_images[swapchainImageIndex],
+		engine.draw_extent,
+		engine.swapchain_extent,
+	)
+
+	transition_image(
+		cmd,
+		engine.swapchain_images[swapchainImageIndex],
+		.TRANSFER_DST_OPTIMAL,
+		.PRESENT_SRC_KHR,
+	)
+
+	vk_assert(vk.EndCommandBuffer(cmd))
+
+	cmd_info := command_buffer_submit_info(cmd)
+	wait_info := semaphore_submit_info(
+		{.COLOR_ATTACHMENT_OUTPUT_KHR},
+		get_current_frame(engine).swapchain_semaphore,
+	)
+	signal_info := semaphore_submit_info(
+		{.ALL_GRAPHICS},
+		engine.render_semaphores[swapchainImageIndex],
+	)
+
+	submit := submit_info(&cmd_info, &signal_info, &wait_info)
+
+	vk_assert(
+		vk.QueueSubmit2(engine.graphics_queue, 1, &submit, get_current_frame(engine).render_fence),
+	)
+
+	presentInfo := vk.PresentInfoKHR{}
+	presentInfo.sType = .PRESENT_INFO_KHR
+	presentInfo.pNext = nil
+	presentInfo.pSwapchains = &engine.swapchain.swapchain
+	presentInfo.swapchainCount = 1
+
+	presentInfo.pWaitSemaphores = &engine.render_semaphores[swapchainImageIndex]
+	presentInfo.waitSemaphoreCount = 1
+
+	presentInfo.pImageIndices = &swapchainImageIndex
+
+	vk_assert(vk.QueuePresentKHR(engine.graphics_queue, &presentInfo))
+
+	//increase the number of frames drawn
+	engine.frame_number += 1
+}
+
+cleanup :: proc(engine: ^VulkanEngine) {
+	vk.DeviceWaitIdle(engine.device.device)
+
+	#reverse for func in engine.deinitFuncs {
+		func(engine)
+	}
+}
+
+init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
+	builder := vkb.create_instance_builder()
+	defer vkb.destroy_instance_builder(builder)
+
+	builder.app_name = "Example Vulkan Application"
+	builder.request_validation_layers = bEnableValidationLayers
+	vkb.instance_builder_use_default_debug_messenger(builder)
+	builder.required_api_version = vk.MAKE_VERSION(1, 3, 0)
+
+	vkb_inst := vkb.instance_builder_build(builder) or_return
+
+	engine.instance = vkb_inst
+	append(
+		&engine.deinitFuncs,
+		proc(engine: ^VulkanEngine) {vkb.destroy_instance(engine.instance)},
+	)
+
+	assert(
+		sdl3.Vulkan_CreateSurface(engine.window, engine.instance.instance, nil, &engine.surface),
+	)
+	append(
+		&engine.deinitFuncs,
+		proc(engine: ^VulkanEngine) {sdl3.Vulkan_DestroySurface(
+				engine.instance.instance,
+				engine.surface,
+				nil,
+			)},
+	)
+
+	features := vk.PhysicalDeviceVulkan13Features {
+		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+		dynamicRendering = true,
+		synchronization2 = true,
+	}
+
+	features12: vk.PhysicalDeviceVulkan12Features
+	features12.sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
+	features12.bufferDeviceAddress = true
+	features12.descriptorIndexing = true
+
+	selector := vkb.create_physical_device_selector_with_surface(engine.instance, engine.surface)
+	defer vkb.destroy_physical_device_selector(selector)
+
+	vkb.physical_device_selector_set_minimum_version_values(selector, 1, 3)
+	vkb.physical_device_selector_set_required_features_12(selector, features12)
+	vkb.physical_device_selector_set_required_features_13(selector, features)
+	vkb.physical_device_selector_set_surface(selector, engine.surface)
+
+	physical_device := vkb.physical_device_selector_select(selector) or_return
+
+	//defer vkb.destroy_physical_device(physical_device)
+	fmt.printfln("Selected GPU: %s", physical_device.properties.deviceName)
+	fmt.printfln(
+		"Vulkan version: %d.%d.%d",
+		physical_device.properties.apiVersion >> 22,
+		(physical_device.properties.apiVersion >> 12) & 0x3FF,
+		physical_device.properties.apiVersion & 0xFFF,
+	)
+
+	device_builder := vkb.create_device_builder(physical_device)
+	defer vkb.destroy_device_builder(device_builder)
+
+	engine.device = vkb.device_builder_build(device_builder) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {vkb.destroy_device(engine.device)})
+
+	engine.graphics_queue = vkb.device_get_queue(engine.device, .Graphics) or_return
+
+	engine.graphics_queue_family = vkb.device_get_queue_index(engine.device, .Graphics) or_return
+
+	assert(physical_device != nil)
+	assert(physical_device.physical_device != nil)
+	allocator_info := vma.Allocator_Create_Info{}
+	allocator_info.physical_device = physical_device.physical_device
+	allocator_info.device = engine.device.device
+	allocator_info.instance = engine.instance.instance
+	allocator_info.flags = {.Buffer_Device_Address}
+
+
+	// Provide Vulkan function pointers (critical!)
+	vulkan_funcs := vma.create_vulkan_functions()
+
+	// Link it in
+	allocator_info.vulkan_functions = &vulkan_funcs
+
+	vk_assert(vma.create_allocator(allocator_info, &engine.allocator))
+
+	append(
+		&engine.deinitFuncs,
+		proc(engine: ^VulkanEngine) {vma.destroy_allocator(engine.allocator)},
+	)
+
+	return nil
+}
+
+init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
+	drawImageExtent: vk.Extent3D = {engine.window_extent.width, engine.window_extent.height, 1}
+
+	//hardcoding the draw format to 32 bit float
+	engine.draw_image.image_format = .R16G16B16A16_SFLOAT
+	engine.draw_image.image_extent = drawImageExtent
+
+	drawImageUsages := vk.ImageUsageFlags{}
+	drawImageUsages |= {.TRANSFER_SRC}
+	drawImageUsages |= {.TRANSFER_DST}
+	drawImageUsages |= {.STORAGE}
+	drawImageUsages |= {.COLOR_ATTACHMENT}
+
+	rimg_info := image_create_info(
+		engine.draw_image.image_format,
+		drawImageUsages,
+		drawImageExtent,
+	)
+
+	//for the draw image, we want to allocate it from gpu local memory
+	rimg_allocinfo := vma.Allocation_Create_Info{}
+	rimg_allocinfo.usage = .Gpu_Only
+	rimg_allocinfo.required_flags = {.DEVICE_LOCAL}
+
+	//allocate and create the image
+	vma.create_image(
+		engine.allocator,
+		rimg_info,
+		rimg_allocinfo,
+		&engine.draw_image.image,
+		&engine.draw_image.allocation,
+		nil,
+	)
+
+	//build a image-view for the draw image to use for rendering
+	rview_info := imageview_create_info(
+		engine.draw_image.image_format,
+		engine.draw_image.image,
+		{.COLOR},
+	)
+
+	vkb.vk_check(
+		vk.CreateImageView(engine.device.device, &rview_info, nil, &engine.draw_image.image_view),
+	) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyImageView(engine.device.device, engine.draw_image.image_view, nil)
+		vma.destroy_image(engine.allocator, engine.draw_image.image, engine.draw_image.allocation)
+	})
+
+	//add to deletion queues
+	//_mainDeletionQueue.push_function([=]() {
+	//	vkDestroyImageView(_device, _drawImage.imageView, nullptr);
+	//	vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
+
+	return create_swapchain(engine, engine.window_extent.width, engine.window_extent.height)
+}
+
+create_swapchain :: proc(engine: ^VulkanEngine, width: u32, height: u32) -> vkb.Error {
+	swapchain_builder := vkb.create_swapchain_builder_default(engine.device)
+	defer vkb.destroy_swapchain_builder(swapchain_builder)
+
+	vkb.swapchain_builder_set_desired_format(
+		swapchain_builder,
+		vk.SurfaceFormatKHR {
+			format     = .R8G8B8A8_UNORM, //
+			colorSpace = .SRGB_NONLINEAR,
+		},
+	)
+	vkb.swapchain_builder_set_desired_present_mode(swapchain_builder, .FIFO)
+	vkb.swapchain_builder_set_desired_extent(swapchain_builder, width, height)
+	vkb.swapchain_builder_add_image_usage_flags(
+		swapchain_builder,
+		vk.ImageUsageFlags{.TRANSFER_DST},
+	)
+
+	err: vkb.Error
+	engine.swapchain = vkb.swapchain_builder_build(swapchain_builder) or_return
+	append(
+		&engine.deinitFuncs,
+		proc(engine: ^VulkanEngine) {vkb.destroy_swapchain(engine.swapchain)},
+	)
+
+	engine.swapchain_extent = engine.swapchain.extent
+
+	engine.swapchain_images, err = vkb.swapchain_get_images(engine.swapchain)
+
+	engine.swapchain_image_views = vkb.swapchain_get_image_views(engine.swapchain) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vkb.swapchain_destroy_image_views(engine.swapchain, engine.swapchain_image_views)
+		delete(engine.swapchain_image_views)
+	})
+
+	return nil
+}
+
+destroy_swapchain :: proc(engine: ^VulkanEngine) {
+	vkb.destroy_swapchain(engine.swapchain)
+
+	for image_view in engine.swapchain_image_views {
+		vk.DestroyImageView(engine.device.device, image_view, nil)
+	}
+}
+
+get_current_frame :: proc(engine: ^VulkanEngine) -> ^FrameData {
+	return &engine.frames[engine.frame_number % FRAME_OVERLAP]
+}
+
+init_commands :: proc(engine: ^VulkanEngine) -> vk.Result {
+	err: vk.Result = .SUCCESS
+
+	command_pool_info := command_pool_create_info(
+		engine.graphics_queue_family,
+		flags = {.RESET_COMMAND_BUFFER},
+	)
+
+	{
+		vk.CreateCommandPool(
+			engine.device.device,
+			&command_pool_info,
+			nil,
+			&engine.imm_command_pool,
+		) or_return
+
+		cmdAllocInfo := command_buffer_alloc_info(engine.imm_command_pool)
+
+		vk.AllocateCommandBuffers(
+			engine.device.device,
+			&cmdAllocInfo,
+			&engine.imm_command_buffer,
+		) or_return
+
+		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+			vk.DestroyCommandPool(engine.device.device, engine.imm_command_pool, nil)
+		})
+	}
+
+	for i := 0; i < FRAME_OVERLAP; i += 1 {
+		vk.CreateCommandPool(
+			engine.device.device,
+			&command_pool_info,
+			nil,
+			&engine.frames[i].command_pool,
+		) or_return
+
+		cmd_alloc_info := command_buffer_alloc_info(engine.frames[i].command_pool)
+
+		vk.AllocateCommandBuffers(
+			engine.device.device,
+			&cmd_alloc_info,
+			&engine.frames[i].main_command_buffer,
+		) or_return
+	}
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		for &frame in engine.frames {
+			vk.FreeCommandBuffers(
+				engine.device.device,
+				frame.command_pool,
+				1,
+				&frame.main_command_buffer,
+			)
+			vk.DestroyCommandPool(engine.device.device, frame.command_pool, nil)
+		}
+	})
+
+	append(
+		&engine.deinitFuncs,
+		proc(engine: ^VulkanEngine) {vk.DeviceWaitIdle(engine.device.device)},
+	)
+
+	return nil
+}
+
+command_pool_create_info :: proc(
+	queueFamilyIndex: u32,
+	flags: vk.CommandPoolCreateFlags = {},
+) -> vk.CommandPoolCreateInfo {
+	info: vk.CommandPoolCreateInfo
+	info.sType = .COMMAND_POOL_CREATE_INFO
+	info.pNext = nil
+	info.queueFamilyIndex = queueFamilyIndex
+	info.flags = flags
+
+	return info
+}
+
+command_buffer_alloc_info :: proc(
+	pool: vk.CommandPool,
+	count: u32 = 1,
+	level: vk.CommandBufferLevel = .PRIMARY,
+) -> vk.CommandBufferAllocateInfo {
+	info: vk.CommandBufferAllocateInfo
+	info.sType = .COMMAND_BUFFER_ALLOCATE_INFO
+	info.pNext = nil
+
+	info.commandPool = pool
+	info.commandBufferCount = count
+	info.level = level
+
+	return info
+}
+
+fence_create_info :: proc(flags: vk.FenceCreateFlags = {}) -> vk.FenceCreateInfo {
+	info: vk.FenceCreateInfo = {}
+	info.sType = .FENCE_CREATE_INFO
+	info.pNext = nil
+
+	info.flags = flags
+
+	return info
+}
+
+semaphore_create_info :: proc(flags: vk.SemaphoreCreateFlags = {}) -> vk.SemaphoreCreateInfo {
+	info: vk.SemaphoreCreateInfo = {}
+	info.sType = .SEMAPHORE_CREATE_INFO
+	info.pNext = nil
+	info.flags = flags
+	return info
+}
+
+init_sync_structures :: proc(engine: ^VulkanEngine) -> vk.Result {
+	fence_create_info := fence_create_info({.SIGNALED})
+	semaphore_create_info := semaphore_create_info()
+
+	res: vk.Result = .SUCCESS
+
+	vk.CreateFence(engine.device.device, &fence_create_info, nil, &engine.imm_fence) or_return
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyFence(engine.device.device, engine.imm_fence, nil)
+	})
+
+	for &frame in engine.frames {
+		res = vk.CreateFence(engine.device.device, &fence_create_info, nil, &frame.render_fence)
+		if (res != .SUCCESS) {
+			return res
+		}
+		res = vk.CreateSemaphore(
+			engine.device.device,
+			&semaphore_create_info,
+			nil,
+			&frame.swapchain_semaphore,
+		)
+		if (res != .SUCCESS) {
+			return res
+		}
+	}
+
+	engine.render_semaphores = make([]vk.Semaphore, len(engine.swapchain_images))
+
+	for i := 0; i < len(engine.swapchain_images); i += 1 {
+		res = vk.CreateSemaphore(
+			engine.device.device,
+			&semaphore_create_info,
+			nil,
+			&engine.render_semaphores[i],
+		)
+		if (res != .SUCCESS) {
+			return res
+		}
+	}
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DeviceWaitIdle(engine.device.device)
+
+		for &frame in engine.frames {
+			vk.DestroyFence(engine.device.device, frame.render_fence, nil)
+			vk.DestroySemaphore(engine.device.device, frame.swapchain_semaphore, nil)
+		}
+
+		for render_semaphore in engine.render_semaphores {
+			vk.DestroySemaphore(engine.device.device, render_semaphore, nil)
+		}
+
+		delete(engine.render_semaphores)
+	})
+
+	return res
+}
+
+vk_assert :: proc(res: vk.Result, loc := #caller_location) {
+	buf: [1024]u8
+
+	assert(
+		res == .SUCCESS,
+		message = fmt.bprintfln(buf[:], "Result not success: %s", res),
+		loc = loc,
+	)
+}
+
+command_buffer_begin_info :: proc(flags: vk.CommandBufferUsageFlags) -> vk.CommandBufferBeginInfo {
+	info: vk.CommandBufferBeginInfo = {}
+
+	info.sType = .COMMAND_BUFFER_BEGIN_INFO
+	info.pNext = nil
+
+	info.pInheritanceInfo = nil
+	info.flags = flags
+
+	return info
+}
+
+transition_image :: proc(
+	cmd: vk.CommandBuffer,
+	image: vk.Image,
+	current_layout: vk.ImageLayout,
+	new_layout: vk.ImageLayout,
+) {
+	image_barrier := vk.ImageMemoryBarrier2 {
+		sType = .IMAGE_MEMORY_BARRIER_2,
+		pNext = nil,
+	}
+
+	image_barrier.srcStageMask = {.ALL_COMMANDS}
+	image_barrier.srcAccessMask = {.MEMORY_WRITE}
+	image_barrier.dstStageMask = {.ALL_COMMANDS}
+	image_barrier.dstAccessMask = {.MEMORY_WRITE, .MEMORY_READ}
+
+	image_barrier.oldLayout = current_layout
+	image_barrier.newLayout = new_layout
+
+	aspectMask: vk.ImageAspectFlags =
+		(new_layout == .DEPTH_ATTACHMENT_OPTIMAL) ? {.DEPTH} : {.COLOR}
+	image_barrier.subresourceRange = image_subresource_range(aspectMask)
+	image_barrier.image = image
+
+	dep_info: vk.DependencyInfo = {}
+	dep_info.sType = .DEPENDENCY_INFO
+	dep_info.pNext = nil
+
+	dep_info.imageMemoryBarrierCount = 1
+	dep_info.pImageMemoryBarriers = &image_barrier
+
+	vk.CmdPipelineBarrier2(cmd, &dep_info)
+}
+
+image_subresource_range :: proc(aspectMask: vk.ImageAspectFlags) -> vk.ImageSubresourceRange {
+	subImage: vk.ImageSubresourceRange = {}
+	subImage.aspectMask = aspectMask
+	subImage.baseMipLevel = 0
+	subImage.levelCount = vk.REMAINING_MIP_LEVELS
+	subImage.baseArrayLayer = 0
+	subImage.layerCount = vk.REMAINING_ARRAY_LAYERS
+
+	return subImage
+}
+
+semaphore_submit_info :: proc(
+	stageMask: vk.PipelineStageFlags2,
+	semaphore: vk.Semaphore,
+) -> vk.SemaphoreSubmitInfo {
+	submitInfo := vk.SemaphoreSubmitInfo{}
+	submitInfo.sType = .SEMAPHORE_SUBMIT_INFO
+	submitInfo.pNext = nil
+	submitInfo.semaphore = semaphore
+	submitInfo.stageMask = stageMask
+	submitInfo.deviceIndex = 0
+	submitInfo.value = 1
+
+	return submitInfo
+}
+
+command_buffer_submit_info :: proc(cmd: vk.CommandBuffer) -> vk.CommandBufferSubmitInfo {
+	info := vk.CommandBufferSubmitInfo{}
+	info.sType = .COMMAND_BUFFER_SUBMIT_INFO
+	info.pNext = nil
+	info.commandBuffer = cmd
+	info.deviceMask = 0
+
+	return info
+}
+
+submit_info :: proc(
+	cmd: ^vk.CommandBufferSubmitInfo,
+	signalSemaphoreInfo: ^vk.SemaphoreSubmitInfo = nil,
+	waitSemaphoreInfo: ^vk.SemaphoreSubmitInfo = nil,
+) -> vk.SubmitInfo2 {
+	info := vk.SubmitInfo2{}
+	info.sType = .SUBMIT_INFO_2
+	info.pNext = nil
+
+	info.waitSemaphoreInfoCount = waitSemaphoreInfo == nil ? 0 : 1
+	info.pWaitSemaphoreInfos = waitSemaphoreInfo
+
+	info.signalSemaphoreInfoCount = signalSemaphoreInfo == nil ? 0 : 1
+	info.pSignalSemaphoreInfos = signalSemaphoreInfo
+
+	info.commandBufferInfoCount = 1
+	info.pCommandBufferInfos = cmd
+
+	return info
+}
+
+image_create_info :: proc(
+	format: vk.Format,
+	usageFlags: vk.ImageUsageFlags,
+	extent: vk.Extent3D,
+) -> vk.ImageCreateInfo {
+	info := vk.ImageCreateInfo{}
+	info.sType = .IMAGE_CREATE_INFO
+	info.pNext = nil
+
+	info.imageType = .D2
+
+	info.format = format
+	info.extent = extent
+
+	info.mipLevels = 1
+	info.arrayLayers = 1
+
+	//for MSAA. we will not be using it by default, so default it to 1 sample per pixel.
+	info.samples = {._1}
+
+	//optimal tiling, which means the image is stored on the best gpu format
+	info.tiling = .OPTIMAL
+	info.usage = usageFlags
+
+	return info
+}
+
+imageview_create_info :: proc(
+	format: vk.Format,
+	image: vk.Image,
+	aspectFlags: vk.ImageAspectFlags,
+) -> vk.ImageViewCreateInfo {
+	// build a image-view for the depth image to use for rendering
+	info: vk.ImageViewCreateInfo = {}
+	info.sType = .IMAGE_VIEW_CREATE_INFO
+	info.pNext = nil
+
+	info.viewType = .D2
+	info.image = image
+	info.format = format
+	info.subresourceRange.baseMipLevel = 0
+	info.subresourceRange.levelCount = 1
+	info.subresourceRange.baseArrayLayer = 0
+	info.subresourceRange.layerCount = 1
+	info.subresourceRange.aspectMask = aspectFlags
+
+	return info
+}
+
+copy_image_to_image :: proc(
+	cmd: vk.CommandBuffer,
+	source: vk.Image,
+	dest: vk.Image,
+	src_size: vk.Extent2D,
+	dst_size: vk.Extent2D,
+) {
+	blit_region := vk.ImageBlit2 {
+		sType = .IMAGE_BLIT_2,
+		pNext = nil,
+	}
+
+	blit_region.srcOffsets[1].x = cast(i32)src_size.width
+	blit_region.srcOffsets[1].y = cast(i32)src_size.height
+	blit_region.srcOffsets[1].z = 1
+
+	blit_region.dstOffsets[1].x = cast(i32)dst_size.width
+	blit_region.dstOffsets[1].y = cast(i32)dst_size.height
+	blit_region.dstOffsets[1].z = 1
+
+	blit_region.srcSubresource.aspectMask = {.COLOR}
+	blit_region.srcSubresource.baseArrayLayer = 0
+	blit_region.srcSubresource.layerCount = 1
+	blit_region.srcSubresource.mipLevel = 0
+
+	blit_region.dstSubresource.aspectMask = {.COLOR}
+	blit_region.dstSubresource.baseArrayLayer = 0
+	blit_region.dstSubresource.layerCount = 1
+	blit_region.dstSubresource.mipLevel = 0
+
+	blitInfo := vk.BlitImageInfo2 {
+		sType = .BLIT_IMAGE_INFO_2,
+		pNext = nil,
+	}
+	blitInfo.dstImage = dest
+	blitInfo.dstImageLayout = .TRANSFER_DST_OPTIMAL
+	blitInfo.srcImage = source
+	blitInfo.srcImageLayout = .TRANSFER_SRC_OPTIMAL
+	blitInfo.filter = .LINEAR
+	blitInfo.regionCount = 1
+	blitInfo.pRegions = &blit_region
+
+	vk.CmdBlitImage2(cmd, &blitInfo)
+}
+
+draw_background :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
+	vk.CmdBindPipeline(cmd, .COMPUTE, engine.gradient_pipeline)
+
+	vk.CmdBindDescriptorSets(
+		cmd,
+		.COMPUTE,
+		engine.gradient_pipeline_layout,
+		0,
+		1,
+		&engine.draw_image_descriptors,
+		0,
+		nil,
+	)
+
+	vk.CmdDispatch(
+		cmd,
+		cast(u32)math.ceil((cast(f32)engine.draw_extent.width) / 16.0),
+		cast(u32)math.ceil((cast(f32)engine.draw_extent.height) / 16.0),
+		1,
+	)
+}
+
+init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
+	sizes := [?]PoolSizeRatio{PoolSizeRatio{type = .STORAGE_IMAGE, ratio = 1.0}}
+
+	descriptor_allocator_init_pool(
+		&engine.global_descriptor_allocator,
+		engine.device.device,
+		10,
+		sizes[:],
+	)
+
+	{
+		builder := DescriptorLayoutBuilder{}
+		descriptor_builder_add_binding(&builder, 0, .STORAGE_IMAGE)
+		engine.draw_image_descriptor_layout = descriptor_builder_build(
+			&builder,
+			engine.device.device,
+			{.COMPUTE},
+		) or_return
+	}
+
+	engine.draw_image_descriptors = descriptor_allocator_allocate(
+		&engine.global_descriptor_allocator,
+		engine.device.device,
+		engine.draw_image_descriptor_layout,
+	)
+
+	img_info := vk.DescriptorImageInfo{}
+	img_info.imageLayout = .GENERAL
+	img_info.imageView = engine.draw_image.image_view
+
+	draw_image_write := vk.WriteDescriptorSet {
+		sType = .WRITE_DESCRIPTOR_SET,
+		pNext = nil,
+	}
+
+	draw_image_write.dstBinding = 0
+	draw_image_write.dstSet = engine.draw_image_descriptors
+	draw_image_write.descriptorCount = 1
+	draw_image_write.descriptorType = .STORAGE_IMAGE
+	draw_image_write.pImageInfo = &img_info
+
+	vk.UpdateDescriptorSets(engine.device.device, 1, &draw_image_write, 0, nil)
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		descriptor_allocator_destroy_pool(
+			&engine.global_descriptor_allocator,
+			engine.device.device,
+		)
+		vk.DestroyDescriptorSetLayout(
+			engine.device.device,
+			engine.draw_image_descriptor_layout,
+			nil,
+		)
+	})
+
+	return nil
+}
+
+init_pipelines :: proc(engine: ^VulkanEngine) {
+	err := init_background_pipelines(engine)
+	if err != nil {
+		fmt.panicf("Failed to create pipeline: %s", err)
+	}
+}
+
+init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
+	compute_layout := vk.PipelineLayoutCreateInfo {
+		sType = .PIPELINE_LAYOUT_CREATE_INFO,
+		pNext = nil,
+	}
+
+	compute_layout.pSetLayouts = &engine.draw_image_descriptor_layout
+	compute_layout.setLayoutCount = 1
+
+	vkb.vk_check(
+		vk.CreatePipelineLayout(
+			engine.device.device,
+			&compute_layout,
+			nil,
+			&engine.gradient_pipeline_layout,
+		),
+	) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyPipelineLayout(engine.device.device, engine.gradient_pipeline_layout, nil)
+	})
+
+	compute_draw_shader := load_shader_module(
+		"shaders/gradient.comp.spv",
+		engine.device.device,
+	) or_return
+
+	defer vk.DestroyShaderModule(engine.device.device, compute_draw_shader, nil)
+
+	stageinfo: vk.PipelineShaderStageCreateInfo
+	stageinfo.sType = .PIPELINE_SHADER_STAGE_CREATE_INFO
+	stageinfo.pNext = nil
+	stageinfo.stage = {.COMPUTE}
+	stageinfo.module = compute_draw_shader
+	stageinfo.pName = "main"
+
+	computePipelineCreateInfo: vk.ComputePipelineCreateInfo
+	computePipelineCreateInfo.sType = .COMPUTE_PIPELINE_CREATE_INFO
+	computePipelineCreateInfo.pNext = nil
+	computePipelineCreateInfo.layout = engine.gradient_pipeline_layout
+	computePipelineCreateInfo.stage = stageinfo
+
+	vkb.vk_check(
+		vk.CreateComputePipelines(
+			engine.device.device,
+			0,
+			1,
+			&computePipelineCreateInfo,
+			nil,
+			&engine.gradient_pipeline,
+		),
+	) or_return
+
+	fmt.println("Created gradient_pipeline")
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyPipeline(engine.device.device, engine.gradient_pipeline, nil)
+	})
+
+	return nil
+}
+
+@(private)
+init_imgui :: proc(engine: ^VulkanEngine) {
+}
+
+immediate_submit :: proc(
+	engine: ^VulkanEngine,
+	function: proc(cmd: vk.CommandBuffer),
+) -> vk.Result {
+	vk.ResetFences(engine.device.device, 1, &engine.imm_fence) or_return
+	vk.ResetCommandBuffer(engine.imm_command_buffer, {}) or_return
+
+	cmd := engine.imm_command_buffer
+
+	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
+
+	vk.BeginCommandBuffer(cmd, &cmd_begin_info) or_return
+
+	function(cmd)
+
+	vk.EndCommandBuffer(cmd) or_return
+
+	cmd_info := command_buffer_submit_info(cmd)
+
+	submit := submit_info(&cmd_info)
+
+	vk.QueueSubmit2(engine.graphics_queue, 1, &submit, engine.imm_fence) or_return
+
+	vk.WaitForFences(engine.device.device, 1, &engine.imm_fence, true, 99999999) or_return
+
+	return nil
+}
