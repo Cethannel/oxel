@@ -2,7 +2,7 @@ package engine
 
 import "core:c"
 import "core:flags"
-import "vendor:sdl3"
+import sdl2 "vendor:sdl2"
 import vk "vendor:vulkan"
 
 import "core:fmt"
@@ -13,6 +13,10 @@ import "core:time"
 import vkb "../vkbootstrap/"
 
 import vma "../vma/"
+
+import imgui "../vendor/gitlab.com/L-4/odin-imgui"
+import imgui_sdl2 "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_sdl2"
+import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
 
 DeinitFunc :: proc(engine: ^VulkanEngine)
 
@@ -38,7 +42,7 @@ VulkanEngine :: struct {
 	frame_number:                 int,
 	stop_rendering:               bool,
 	window_extent:                vk.Extent2D,
-	window:                       ^sdl3.Window,
+	window:                       ^sdl2.Window,
 	instance:                     ^vkb.Instance,
 	device:                       ^vkb.Device,
 	surface:                      vk.SurfaceKHR,
@@ -65,6 +69,7 @@ VulkanEngine :: struct {
 	imm_fence:                    vk.Fence,
 	imm_command_buffer:           vk.CommandBuffer,
 	imm_command_pool:             vk.CommandPool,
+	imgui_pool:                   vk.DescriptorPool,
 }
 
 @(private)
@@ -79,15 +84,17 @@ init :: proc() -> VulkanEngine {
 		is_initialized = false,
 	}
 
-	assert(sdl3.Init(sdl3.InitFlags{.VIDEO}), "Failed to initalize SDL")
+	assert(sdl2.Init(sdl2.InitFlags{.VIDEO}) == 0, "Failed to initalize SDL")
 
-	engine.window = sdl3.CreateWindow(
+	engine.window = sdl2.CreateWindow(
 		"VulkanEngine",
+		0,
+		0,
 		cast(c.int)engine.window_extent.width,
 		cast(c.int)engine.window_extent.height,
-		sdl3.WindowFlags{.VULKAN},
+		sdl2.WindowFlags{.VULKAN},
 	)
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {sdl3.DestroyWindow(engine.window)})
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {sdl2.DestroyWindow(engine.window)})
 
 	assert(init_vulkan(&engine) == nil, "Failed to initalize vulkan")
 
@@ -109,19 +116,23 @@ init :: proc() -> VulkanEngine {
 run :: proc(engine: ^VulkanEngine) {
 	assert(engine.is_initialized, "Engine is not initalized")
 
-	e: sdl3.Event
+	e: sdl2.Event
 
 	quit := false
 
 	for (!quit) {
-		for (sdl3.PollEvent(&e)) {
-			#partial switch e.type {
-			case .QUIT:
+		for (sdl2.PollEvent(&e)) {
+			if e.type == .QUIT {
 				quit = true
-			case .WINDOW_MINIMIZED:
-				engine.stop_rendering = true
-			case .WINDOW_RESTORED:
-				engine.stop_rendering = false
+			}
+
+			if e.type == .WINDOWEVENT {
+				#partial switch e.window.event {
+				case .MINIMIZED:
+					engine.stop_rendering = true
+				case .RESTORED:
+					engine.stop_rendering = false
+				}
 			}
 		}
 
@@ -129,6 +140,14 @@ run :: proc(engine: ^VulkanEngine) {
 			time.sleep(time.Microsecond * 100)
 			continue
 		}
+
+		imgui_vulkan.NewFrame()
+		imgui_sdl2.NewFrame()
+		imgui.NewFrame()
+
+		imgui.ShowDemoWindow()
+
+		imgui.Render()
 
 		draw(engine)
 	}
@@ -266,17 +285,10 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		proc(engine: ^VulkanEngine) {vkb.destroy_instance(engine.instance)},
 	)
 
-	assert(
-		sdl3.Vulkan_CreateSurface(engine.window, engine.instance.instance, nil, &engine.surface),
-	)
-	append(
-		&engine.deinitFuncs,
-		proc(engine: ^VulkanEngine) {sdl3.Vulkan_DestroySurface(
-				engine.instance.instance,
-				engine.surface,
-				nil,
-			)},
-	)
+	assert(!!sdl2.Vulkan_CreateSurface(engine.window, engine.instance.instance, &engine.surface))
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroySurfaceKHR(engine.instance.instance, engine.surface, nil)
+	})
 
 	features := vk.PhysicalDeviceVulkan13Features {
 		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -1004,8 +1016,36 @@ init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
 	pool_info.poolSizeCount = len(pool_sizes)
 	pool_info.pPoolSizes = raw_data(pool_sizes[:])
 
-	imgui_pool: vk.DescriptorPool
-	vk.CreateDescriptorPool(engine.device.device, &pool_info, nil, &imgui_pool) or_return
+	vk.CreateDescriptorPool(engine.device.device, &pool_info, nil, &engine.imgui_pool) or_return
+
+	ctx := imgui.CreateContext()
+
+	assert(imgui_sdl2.InitForVulkan(engine.window))
+
+	init_info: imgui_vulkan.InitInfo
+	init_info.Instance = engine.instance.instance
+	init_info.PhysicalDevice = engine.device.physical_device.physical_device
+	init_info.Device = engine.device.device
+	init_info.Queue = engine.graphics_queue
+	init_info.DescriptorPool = engine.imgui_pool
+	init_info.MinImageCount = 3
+	init_info.ImageCount = 3
+	init_info.UseDynamicRendering = true
+
+	init_info.PipelineRenderingCreateInfo.sType = .PIPELINE_RENDERING_CREATE_INFO
+	init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1
+	init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &engine.swapchain.image_format
+
+	init_info.MSAASamples = ._1
+
+	assert(imgui_vulkan.Init(&init_info))
+
+	assert(imgui_vulkan.CreateFontsTexture())
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		imgui_vulkan.Shutdown()
+		vk.DestroyDescriptorPool(engine.device.device, engine.imgui_pool, nil)
+	})
 
 	return nil
 }
