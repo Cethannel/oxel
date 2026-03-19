@@ -35,6 +35,13 @@ AllocateImage :: struct {
 	image_format: vk.Format,
 }
 
+ComputeEffect :: struct {
+	name:     string,
+	pipeline: vk.Pipeline,
+	layout:   vk.PipelineLayout,
+	data:     ComputePushConstants,
+}
+
 FRAME_OVERLAP :: 2
 
 VulkanEngine :: struct {
@@ -63,13 +70,23 @@ VulkanEngine :: struct {
 	draw_image_descriptors:       vk.DescriptorSet,
 	draw_image_descriptor_layout: vk.DescriptorSetLayout,
 	//
-	gradient_pipeline:            vk.Pipeline,
 	gradient_pipeline_layout:     vk.PipelineLayout,
 	// Imgui
 	imm_fence:                    vk.Fence,
 	imm_command_buffer:           vk.CommandBuffer,
 	imm_command_pool:             vk.CommandPool,
 	imgui_pool:                   vk.DescriptorPool,
+
+	//
+	backgroundEffects:            [dynamic]ComputeEffect,
+	currentBackgroundEffect:      int,
+}
+
+ComputePushConstants :: struct {
+	data1: [4]f32,
+	data2: [4]f32,
+	data3: [4]f32,
+	data4: [4]f32,
 }
 
 @(private)
@@ -108,6 +125,8 @@ init :: proc() -> VulkanEngine {
 
 	init_pipelines(&engine)
 
+	assert(init_imgui(&engine) == .SUCCESS, "Failed to initialize imgui")
+
 	engine.is_initialized = true
 
 	return engine
@@ -122,6 +141,10 @@ run :: proc(engine: ^VulkanEngine) {
 
 	for (!quit) {
 		for (sdl2.PollEvent(&e)) {
+			if imgui_sdl2.ProcessEvent(&e) {
+				continue
+			}
+
 			if e.type == .QUIT {
 				quit = true
 			}
@@ -144,6 +167,26 @@ run :: proc(engine: ^VulkanEngine) {
 		imgui_vulkan.NewFrame()
 		imgui_sdl2.NewFrame()
 		imgui.NewFrame()
+
+		if imgui.Begin("background") {
+			defer imgui.End()
+
+			selected := &engine.backgroundEffects[engine.currentBackgroundEffect]
+
+			imgui.Text("Selected effect: %s", selected.name)
+
+			imgui.SliderInt(
+				"Effect index",
+				cast(^c.int)&engine.currentBackgroundEffect,
+				0,
+				cast(c.int)len(engine.backgroundEffects) - 1,
+			)
+
+			imgui.InputFloat4("data1", &selected.data.data1)
+			imgui.InputFloat4("data2", &selected.data.data2)
+			imgui.InputFloat4("data3", &selected.data.data3)
+			imgui.InputFloat4("data4", &selected.data.data4)
+		}
 
 		imgui.ShowDemoWindow()
 
@@ -222,6 +265,15 @@ draw :: proc(engine: ^VulkanEngine) {
 		cmd,
 		engine.swapchain_images[swapchainImageIndex],
 		.TRANSFER_DST_OPTIMAL,
+		.COLOR_ATTACHMENT_OPTIMAL,
+	)
+
+	draw_imgui(engine, cmd, engine.swapchain_image_views[swapchainImageIndex])
+
+	transition_image(
+		cmd,
+		engine.swapchain_images[swapchainImageIndex],
+		.COLOR_ATTACHMENT_OPTIMAL,
 		.PRESENT_SRC_KHR,
 	)
 
@@ -258,6 +310,17 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	//increase the number of frames drawn
 	engine.frame_number += 1
+}
+
+draw_imgui :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer, targetImageView: vk.ImageView) {
+	colorAttachment := attachment_info(targetImageView, nil)
+	renderInfo := rendering_info(engine.swapchain_extent, &colorAttachment, nil)
+
+	vk.CmdBeginRendering(cmd, &renderInfo)
+
+	imgui_vulkan.RenderDrawData(imgui.GetDrawData(), cmd)
+
+	vk.CmdEndRendering(cmd)
 }
 
 cleanup :: proc(engine: ^VulkanEngine) {
@@ -845,7 +908,9 @@ copy_image_to_image :: proc(
 }
 
 draw_background :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
-	vk.CmdBindPipeline(cmd, .COMPUTE, engine.gradient_pipeline)
+	effect := &engine.backgroundEffects[engine.currentBackgroundEffect]
+
+	vk.CmdBindPipeline(cmd, .COMPUTE, effect.pipeline)
 
 	vk.CmdBindDescriptorSets(
 		cmd,
@@ -856,6 +921,15 @@ draw_background :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		&engine.draw_image_descriptors,
 		0,
 		nil,
+	)
+
+	vk.CmdPushConstants(
+		cmd,
+		engine.gradient_pipeline_layout,
+		{.COMPUTE},
+		0,
+		size_of(ComputePushConstants),
+		&effect.data,
 	)
 
 	vk.CmdDispatch(
@@ -927,7 +1001,7 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 init_pipelines :: proc(engine: ^VulkanEngine) {
 	err := init_background_pipelines(engine)
 	if err != nil {
-		fmt.panicf("Failed to create pipeline: %s", err)
+		fmt.panicf("Failed to create pipeline: %e", err)
 	}
 }
 
@@ -939,6 +1013,14 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 
 	compute_layout.pSetLayouts = &engine.draw_image_descriptor_layout
 	compute_layout.setLayoutCount = 1
+
+	pushConstant: vk.PushConstantRange
+	pushConstant.offset = 0
+	pushConstant.size = size_of(ComputePushConstants)
+	pushConstant.stageFlags = {.COMPUTE}
+
+	compute_layout.pPushConstantRanges = &pushConstant
+	compute_layout.pushConstantRangeCount = 1
 
 	vkb.vk_check(
 		vk.CreatePipelineLayout(
@@ -953,18 +1035,22 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 		vk.DestroyPipelineLayout(engine.device.device, engine.gradient_pipeline_layout, nil)
 	})
 
-	compute_draw_shader := load_shader_module(
-		"shaders/gradient.comp.spv",
+	gradient_shader := load_shader_module(
+		"shaders/gradient_color.comp.spv",
 		engine.device.device,
 	) or_return
 
-	defer vk.DestroyShaderModule(engine.device.device, compute_draw_shader, nil)
+	defer vk.DestroyShaderModule(engine.device.device, gradient_shader, nil)
+
+	sky_shader := load_shader_module("shaders/sky.comp.spv", engine.device.device) or_return
+
+	defer vk.DestroyShaderModule(engine.device.device, sky_shader, nil)
 
 	stageinfo: vk.PipelineShaderStageCreateInfo
 	stageinfo.sType = .PIPELINE_SHADER_STAGE_CREATE_INFO
 	stageinfo.pNext = nil
 	stageinfo.stage = {.COMPUTE}
-	stageinfo.module = compute_draw_shader
+	stageinfo.module = gradient_shader
 	stageinfo.pName = "main"
 
 	computePipelineCreateInfo: vk.ComputePipelineCreateInfo
@@ -973,6 +1059,14 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 	computePipelineCreateInfo.layout = engine.gradient_pipeline_layout
 	computePipelineCreateInfo.stage = stageinfo
 
+	gradient: ComputeEffect
+	gradient.layout = engine.gradient_pipeline_layout
+	gradient.name = "gradient"
+	gradient.data = {}
+
+	gradient.data.data1 = {1, 0, 0, 1}
+	gradient.data.data2 = {0, 0, 1, 1}
+
 	vkb.vk_check(
 		vk.CreateComputePipelines(
 			engine.device.device,
@@ -980,14 +1074,39 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 			1,
 			&computePipelineCreateInfo,
 			nil,
-			&engine.gradient_pipeline,
+			&gradient.pipeline,
 		),
 	) or_return
+
+	computePipelineCreateInfo.stage.module = sky_shader
+
+	sky: ComputeEffect
+	sky.layout = engine.gradient_pipeline_layout
+	sky.name = "sky"
+	sky.data = {}
+
+	sky.data.data1 = {0.1, 0.2, 0.4, 0.97}
+
+	vkb.vk_check(
+		vk.CreateComputePipelines(
+			engine.device.device,
+			0,
+			1,
+			&computePipelineCreateInfo,
+			nil,
+			&sky.pipeline,
+		),
+	) or_return
+
+	append(&engine.backgroundEffects, gradient)
+	append(&engine.backgroundEffects, sky)
 
 	fmt.println("Created gradient_pipeline")
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		vk.DestroyPipeline(engine.device.device, engine.gradient_pipeline, nil)
+		for effect in engine.backgroundEffects {
+			vk.DestroyPipeline(engine.device.device, effect.pipeline, nil)
+		}
 	})
 
 	return nil
@@ -1018,9 +1137,20 @@ init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	vk.CreateDescriptorPool(engine.device.device, &pool_info, nil, &engine.imgui_pool) or_return
 
-	ctx := imgui.CreateContext()
+	imgui.CHECKVERSION()
+	imgui.CreateContext()
 
 	assert(imgui_sdl2.InitForVulkan(engine.window))
+
+	assert(
+		imgui_vulkan.LoadFunctions(
+			proc "c" (name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
+				return vk.GetInstanceProcAddr((^vk.Instance)(user_data)^, name)
+			},
+			&engine.instance.instance,
+		),
+		"Failed to load imgui Vulkan functions",
+	)
 
 	init_info: imgui_vulkan.InitInfo
 	init_info.Instance = engine.instance.instance
@@ -1076,4 +1206,43 @@ immediate_submit :: proc(
 	vk.WaitForFences(engine.device.device, 1, &engine.imm_fence, true, 99999999) or_return
 
 	return nil
+}
+
+attachment_info :: proc(
+	view: vk.ImageView,
+	clear: ^vk.ClearValue,
+	layout: vk.ImageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+) -> vk.RenderingAttachmentInfo {
+	colorAttachment: vk.RenderingAttachmentInfo
+	colorAttachment.sType = .RENDERING_ATTACHMENT_INFO
+	colorAttachment.pNext = nil
+
+	colorAttachment.imageView = view
+	colorAttachment.imageLayout = layout
+	colorAttachment.loadOp = clear != nil ? .CLEAR : .LOAD
+	colorAttachment.storeOp = .STORE
+	if (clear != nil) {
+		colorAttachment.clearValue = clear^
+	}
+
+	return colorAttachment
+}
+
+rendering_info :: proc(
+	renderExtent: vk.Extent2D,
+	colorAttachment: ^vk.RenderingAttachmentInfo,
+	depthAttachment: ^vk.RenderingAttachmentInfo,
+) -> vk.RenderingInfo {
+	renderInfo: vk.RenderingInfo
+	renderInfo.sType = .RENDERING_INFO
+	renderInfo.pNext = nil
+
+	renderInfo.renderArea = vk.Rect2D{vk.Offset2D{0, 0}, renderExtent}
+	renderInfo.layerCount = 1
+	renderInfo.colorAttachmentCount = 1
+	renderInfo.pColorAttachments = colorAttachment
+	renderInfo.pDepthAttachment = depthAttachment
+	renderInfo.pStencilAttachment = nil
+
+	return renderInfo
 }

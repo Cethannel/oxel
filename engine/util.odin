@@ -1,12 +1,13 @@
 package engine
 
 import vkb "../vkbootstrap/"
+import "core:fmt"
 import "core:os"
 import vk "vendor:vulkan"
 
 import "core:mem"
 
-LoadShaderError :: union {
+LoadShaderError :: union #shared_nil {
 	os.Error,
 	vkb.Error,
 }
@@ -18,7 +19,11 @@ load_shader_module :: proc(
 	shader_module: vk.ShaderModule,
 	err: LoadShaderError,
 ) {
-	file := os.open(filePath) or_return
+	file: os.Handle
+	file, err = os.open(filePath)
+	if err != nil {
+		fmt.panicf("Failed to open shader: %s\n", filePath)
+	}
 	defer os.close(file)
 
 	file_size := os.file_size(file) or_return
