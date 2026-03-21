@@ -117,6 +117,9 @@ VulkanEngine :: struct {
 	meshPipelineLayout:           vk.PipelineLayout,
 	meshPipeline:                 vk.Pipeline,
 	rectangle:                    GPUMeshBuffers,
+
+	// :gltf test
+	testMeshes:                   [dynamic]MeshAsset,
 }
 
 ComputePushConstants :: struct {
@@ -1654,6 +1657,10 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		destroy_buffer(engine, engine.rectangle.indexBuffer)
 		destroy_buffer(engine, engine.rectangle.vertexBuffer)
 	})
+
+	ok: bool
+	engine.testMeshes, ok = loadGltfMeshes(engine, "assets/basicmesh.glb")
+	assert(ok, "Failed to load meshes")
 
 	return .SUCCESS
 }

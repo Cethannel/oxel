@@ -1,74 +1,82 @@
 {
-  description = "A Nix-flake-based Odin development environment";
+  description = "Odin project with Vulkan, Wayland, X11, SDL2, ImGui (dynamic preferred)";
 
-  inputs.nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
 
-  outputs =
-    { self, ... }@inputs:
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
 
-    let
-      supportedSystems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-      forEachSupportedSystem =
-        f:
-        inputs.nixpkgs.lib.genAttrs supportedSystems (
-          system:
-          f {
-            pkgs = import inputs.nixpkgs { inherit system; };
-          }
-        );
-    in
-    {
-      devShells = forEachSupportedSystem (
-        { pkgs }:
-        {
-          default = pkgs.mkShell {
-            packages = with pkgs; [
-              odin
-              clang
-              llvmPackages.libcxx
-              SDL2
-              vulkan-headers
-              vulkan-tools          # for testing `vulkaninfo` inside the shell
-            ];
+        runtimeLibs = with pkgs; [
+          vulkan-loader
+          SDL2
+          wayland
+          libxkbcommon
+          libX11
+          libXcursor
+          libXi
+          libXrandr
+          libXinerama
+          # Add if your project actually needs the C++ ImGui lib (rare for Odin bindings)
+          # imgui  # ← usually NOT needed — Odin vendor bindings use their own .a or .so
+        ];
 
-            shellHook = ''
-              # Nix libc++ for link-time (-lc++) and runtime
-              export LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-                pkgs.llvmPackages.libcxx
-              ]}:$LIBRARY_PATH"
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-                pkgs.SDL2
-                pkgs.llvmPackages.libcxx
-              ]}:/usr/lib64:$LD_LIBRARY_PATH"
+        buildLibs = runtimeLibs ++ (with pkgs; [
+          vulkan-headers
+          wayland-protocols
+          pkg-config
+          # Explicitly bring in C++ runtime (fixes -lc++)
+          stdenv.cc.cc.lib    # libstdc++.so
+          # or for clang/libc++: llvmPackages.libcxx
+        ]);
 
-              # Add Gentoo's slotted LLVM (fixes the exact libLLVM.so.21.1 error)
-              for llvm_lib in /usr/lib64/llvm/*/lib; do
-                if [ -d "$llvm_lib" ]; then
-                  export LD_LIBRARY_PATH="$llvm_lib:$LD_LIBRARY_PATH"
-                  echo "Added Gentoo LLVM path: $llvm_lib"
-                  break
-                fi
-              done
+      in {
+        packages.default = pkgs.stdenv.mkDerivation {
+          pname = "odin-vulkan-project";
+          version = "0.1.0";
 
-              # Use Gentoo's native Vulkan loader + layers
-              export VK_LAYER_PATH="/usr/share/vulkan/explicit_layer.d"
+          src = ./.;
 
-              # Point to Gentoo's ICD files (RADV driver)
-              ICD_PATHS=$(find /etc/vulkan/icd.d /usr/share/vulkan/icd.d -name "*.json" 2>/dev/null | tr '\n' ':' | sed 's/:$//')
-              if [ -n "$ICD_PATHS" ]; then
-                export VK_DRIVER_FILES="$ICD_PATHS"
-                export VK_ICD_FILENAMES="$ICD_PATHS"
-              fi
+          nativeBuildInputs = with pkgs; [ odin makeWrapper pkg-config ];
+          buildInputs = buildLibs;
 
-              echo "Using Gentoo system Vulkan + SDL2"
-            '';
-          };
-        }
-      );
-    };
+          # If you must use static vendor libs, see workaround below
+          buildPhase = ''
+            echo "Building Odin project..."
+            odin build . -out:odin-project -o:speed
+          '';
+
+          installPhase = ''
+            mkdir -p $out/bin
+            cp odin-project $out/bin/
+          '';
+
+          postFixup = ''
+            wrapProgram $out/bin/odin-project \
+              --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeLibs}"
+          '';
+
+          meta.platforms = [ "x86_64-linux" "aarch64-linux" ];
+        };
+
+        apps.default = {
+          type = "app";
+          program = "$$   {self.packages.   $${system}.default}/bin/odin-project";
+        };
+
+        devShells.default = pkgs.mkShell {
+          inputsFrom = [ self.packages.${system}.default ];
+          packages = with pkgs; [ odin ];
+
+          shellHook = ''
+            echo "Odin dev shell (Vulkan + Wayland + X11 + SDL2)"
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath runtimeLibs}:$LD_LIBRARY_PATH"
+          '';
+        };
+      }
+    );
 }
