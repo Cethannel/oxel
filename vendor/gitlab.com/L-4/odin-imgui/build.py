@@ -238,8 +238,8 @@ def main():
         assertx(has_tool("ar"), "ar not found!")
 
     # Assume these are already vendored at these relative locations
-    imgui_path       = "../../imgui"
-    dear_bindings_path = "../../dear_bindings"
+    imgui_path          = "../../../github.com/ocornut/imgui"
+    dear_bindings_path = "../../../github.com/dearimgui/dear_bindings"
 
     assertx(path.isdir(imgui_path), f"Missing vendored imgui at {imgui_path}")
     assertx(path.isdir(dear_bindings_path), f"Missing vendored dear_bindings at {dear_bindings_path}")
