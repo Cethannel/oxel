@@ -34,6 +34,11 @@
           libcxx  # if you need libc++ explicitly
         ];
 
+				pythonWithPly = pkgs.python3.withPackages (ps: with ps; [
+					ply   # ← this is python3Packages.ply
+					# You can add more here later if dear_bindings needs them
+				]);
+
         cppStdlib = pkgs.stdenv.cc.cc.lib;  # for -lstdc++
 
       in {
@@ -43,7 +48,7 @@
 
           src = ./.;
 
-          nativeBuildInputs = with pkgs; [ odin clang makeWrapper pkg-config ];
+          nativeBuildInputs = with pkgs; [ odin clang makeWrapper pkg-config pythonWithPly ];
           buildInputs = runtimeLibs ++ (with pkgs; [
             cppStdlib
             vulkan-headers

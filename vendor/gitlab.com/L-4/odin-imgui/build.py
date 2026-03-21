@@ -43,7 +43,7 @@ backends = {
 
 # For reference only (paths are now hardcoded as relative)
 backend_deps_reference = {
-    "sdl2":   { "path": "SDL2" },
+    "sdl2":   { "path": "libsdl-org/SDL" },
     "glfw":   { "path": "glfw" },
     "vulkan": { "path": "Vulkan-Headers" },
 }
