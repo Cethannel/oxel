@@ -153,7 +153,10 @@ init :: proc() -> VulkanEngine {
 	)
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {sdl2.DestroyWindow(engine.window)})
 
-	assert(init_vulkan(&engine) == nil, "Failed to initalize vulkan")
+	err := init_vulkan(&engine)
+	if err != nil {
+		fmt.panicf("Failed to initalize vulkan: %s", err)
+	}
 
 	assert(init_swapchain(&engine) == nil, "Failed to initalize swapchain")
 
