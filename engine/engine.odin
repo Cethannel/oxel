@@ -2,6 +2,8 @@ package engine
 
 import "core:c"
 import "core:flags"
+import "core:log"
+import "core:mem"
 import sdl2 "vendor:sdl2"
 import vk "vendor:vulkan"
 
@@ -42,6 +44,33 @@ ComputeEffect :: struct {
 	data:     ComputePushConstants,
 }
 
+AllocatedBuffer :: struct {
+	buffer:     vk.Buffer,
+	allocation: vma.Allocation,
+	info:       vma.Allocation_Info,
+}
+
+Vertex :: struct {
+	position: [3]f32,
+	uv_x:     f32,
+	normal:   [3]f32,
+	uv_y:     f32,
+	color:    [4]f32,
+}
+
+// holds the resources needed for a mesh
+GPUMeshBuffers :: struct {
+	indexBuffer:         AllocatedBuffer,
+	vertexBuffer:        AllocatedBuffer,
+	vertexBufferAddress: vk.DeviceAddress,
+}
+
+// push constants for our mesh object draws
+GPUDrawPushConstants :: struct {
+	worldMatrix:  matrix[4, 4]f32,
+	vertexBuffer: vk.DeviceAddress,
+}
+
 FRAME_OVERLAP :: 2
 
 VulkanEngine :: struct {
@@ -80,6 +109,14 @@ VulkanEngine :: struct {
 	//
 	backgroundEffects:            [dynamic]ComputeEffect,
 	currentBackgroundEffect:      int,
+
+	//
+	trianglePipelineLayout:       vk.PipelineLayout,
+	trianglePipeline:             vk.Pipeline,
+	//
+	meshPipelineLayout:           vk.PipelineLayout,
+	meshPipeline:                 vk.Pipeline,
+	rectangle:                    GPUMeshBuffers,
 }
 
 ComputePushConstants :: struct {
@@ -126,6 +163,8 @@ init :: proc() -> VulkanEngine {
 	init_pipelines(&engine)
 
 	assert(init_imgui(&engine) == .SUCCESS, "Failed to initialize imgui")
+
+	assert(init_default_data(&engine) == .SUCCESS, "Failed to init default data")
 
 	engine.is_initialized = true
 
@@ -243,8 +282,17 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	draw_background(engine, cmd)
 
+	transition_image(cmd, engine.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
+
+	draw_geometry(engine, cmd)
+
 	//transition the draw image and the swapchain image into their correct transfer layouts
-	transition_image(cmd, engine.draw_image.image, .GENERAL, .TRANSFER_SRC_OPTIMAL)
+	transition_image(
+		cmd,
+		engine.draw_image.image,
+		.COLOR_ATTACHMENT_OPTIMAL,
+		.TRANSFER_SRC_OPTIMAL,
+	)
 	transition_image(
 		cmd,
 		engine.swapchain_images[swapchainImageIndex],
@@ -1003,6 +1051,16 @@ init_pipelines :: proc(engine: ^VulkanEngine) {
 	if err != nil {
 		fmt.panicf("Failed to create pipeline: %e", err)
 	}
+
+	vk_err := init_triangle_pipeline(engine)
+	if vk_err != .SUCCESS {
+		fmt.panicf("Failed to create pipeline: %e", vk_err)
+	}
+
+	vk_err = init_mesh_pipeline(engine)
+	if vk_err != .SUCCESS {
+		fmt.panicf("Failed to create pipeline: %e", vk_err)
+	}
 }
 
 init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
@@ -1180,21 +1238,20 @@ init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
 	return nil
 }
 
-immediate_submit :: proc(
-	engine: ^VulkanEngine,
-	function: proc(cmd: vk.CommandBuffer),
-) -> vk.Result {
+immediate_start :: proc(engine: ^VulkanEngine) -> (cmd: vk.CommandBuffer, err: vk.Result) {
 	vk.ResetFences(engine.device.device, 1, &engine.imm_fence) or_return
 	vk.ResetCommandBuffer(engine.imm_command_buffer, {}) or_return
 
-	cmd := engine.imm_command_buffer
+	cmd = engine.imm_command_buffer
 
 	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
 	vk.BeginCommandBuffer(cmd, &cmd_begin_info) or_return
 
-	function(cmd)
+	return
+}
 
+immediate_submit :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) -> vk.Result {
 	vk.EndCommandBuffer(cmd) or_return
 
 	cmd_info := command_buffer_submit_info(cmd)
@@ -1245,4 +1302,358 @@ rendering_info :: proc(
 	renderInfo.pStencilAttachment = nil
 
 	return renderInfo
+}
+
+init_triangle_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
+	err: LoadShaderError = nil
+	triangleFragShader: vk.ShaderModule
+	triangleFragShader, err = load_shader_module(
+		"shaders/color_triangle.frag.spv",
+		engine.device.device,
+	)
+	if err == nil {
+		log.info("Triangle fragment shader succesfully loaded")
+	} else {
+		log.errorf("Failed to load triangle fragment shader: %s", err)
+	}
+	defer vk.DestroyShaderModule(engine.device.device, triangleFragShader, nil)
+
+	triangleVertexShader: vk.ShaderModule
+	triangleVertexShader, err = load_shader_module(
+		"shaders/color_triangle.vert.spv",
+		engine.device.device,
+	)
+	if err == nil {
+		log.info("Triangle vertex shader succesfully loaded")
+	} else {
+		log.errorf("Failed to load triangle vertex shader: %s", err)
+	}
+	defer vk.DestroyShaderModule(engine.device.device, triangleVertexShader, nil)
+
+	pipeline_layout_info := pipeline_layout_create_info()
+	vk.CreatePipelineLayout(
+		engine.device.device,
+		&pipeline_layout_info,
+		nil,
+		&engine.trianglePipelineLayout,
+	) or_return
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyPipelineLayout(engine.device.device, engine.trianglePipelineLayout, nil)
+	})
+
+	pipelineBuilder: PipelineBuilder
+	pipeline_builder_clear(&pipelineBuilder)
+	pipelineBuilder.pipelineLayout = engine.trianglePipelineLayout
+	pipeline_builder_set_shaders(&pipelineBuilder, triangleVertexShader, triangleFragShader)
+	pipeline_builder_set_topology(&pipelineBuilder, .TRIANGLE_LIST)
+	pipeline_builder_set_polygon_mode(&pipelineBuilder, .FILL)
+	pipeline_builder_set_cull_mode(&pipelineBuilder, {}, .CLOCKWISE)
+	pipeline_builder_set_multisampling_none(&pipelineBuilder)
+	pipeline_builder_disable_blending(&pipelineBuilder)
+	pipeline_builder_disable_depthtest(&pipelineBuilder)
+
+	pipeline_builder_set_color_attachment_format(&pipelineBuilder, engine.draw_image.image_format)
+	pipeline_builder_set_depth_format(&pipelineBuilder, .UNDEFINED)
+
+	engine.trianglePipeline = pipeline_builder_build(
+		&pipelineBuilder,
+		engine.device.device,
+	) or_return
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyPipeline(engine.device.device, engine.trianglePipeline, nil)
+	})
+
+	return .SUCCESS
+}
+
+draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
+	colorAttachment := attachment_info(
+		engine.draw_image.image_view,
+		nil,
+		.COLOR_ATTACHMENT_OPTIMAL,
+	)
+
+	renderInfo := rendering_info(engine.draw_extent, &colorAttachment, nil)
+
+	vk.CmdBeginRendering(cmd, &renderInfo)
+	defer vk.CmdEndRendering(cmd)
+
+	vk.CmdBindPipeline(cmd, .GRAPHICS, engine.trianglePipeline)
+
+	viewport: vk.Viewport = {}
+	viewport.x = 0
+	viewport.y = 0
+	viewport.width = cast(f32)engine.draw_extent.width
+	viewport.height = cast(f32)engine.draw_extent.height
+	viewport.minDepth = 0.
+	viewport.maxDepth = 1.
+
+	vk.CmdSetViewport(cmd, 0, 1, &viewport)
+
+	scissor: vk.Rect2D = {}
+	scissor.offset.x = 0
+	scissor.offset.y = 0
+	scissor.extent.width = engine.draw_extent.width
+	scissor.extent.height = engine.draw_extent.height
+
+	vk.CmdSetScissor(cmd, 0, 1, &scissor)
+
+	//launch a draw command to draw 3 vertices
+	vk.CmdDraw(cmd, 3, 1, 0, 0)
+
+	vk.CmdBindPipeline(cmd, .GRAPHICS, engine.meshPipeline)
+
+	push_constants: GPUDrawPushConstants
+	push_constants.worldMatrix = 1.
+	push_constants.vertexBuffer = engine.rectangle.vertexBufferAddress
+
+	vk.CmdPushConstants(
+		cmd,
+		engine.meshPipelineLayout,
+		{.VERTEX},
+		0,
+		size_of(GPUDrawPushConstants),
+		&push_constants,
+	)
+
+	vk.CmdBindIndexBuffer(cmd, engine.rectangle.indexBuffer.buffer, 0, .UINT32)
+
+	vk.CmdDrawIndexed(cmd, 6, 1, 0, 0, 0)
+}
+
+create_buffer :: proc(
+	engine: ^VulkanEngine,
+	allocSize: vk.DeviceSize,
+	usage: vk.BufferUsageFlags,
+	memoryUsage: vma.Memory_Usage,
+) -> (
+	buffer: AllocatedBuffer,
+	err: vk.Result,
+) {
+	bufferInfo: vk.BufferCreateInfo = {
+		sType = .BUFFER_CREATE_INFO,
+	}
+
+	bufferInfo.pNext = nil
+	bufferInfo.size = allocSize
+
+	bufferInfo.usage = usage
+
+	vmaAllocInfo: vma.Allocation_Create_Info
+	vmaAllocInfo.usage = memoryUsage
+	vmaAllocInfo.flags = {.Mapped}
+
+	vma.create_buffer(
+		engine.allocator,
+		bufferInfo,
+		vmaAllocInfo,
+		&buffer.buffer,
+		&buffer.allocation,
+		&buffer.info,
+	) or_return
+
+	return
+}
+
+destroy_buffer :: proc(engine: ^VulkanEngine, #by_ptr buffer: AllocatedBuffer) {
+	vma.destroy_buffer(engine.allocator, buffer.buffer, buffer.allocation)
+}
+
+uploadMesh :: proc(
+	engine: ^VulkanEngine,
+	indices: []u32,
+	vertices: []Vertex,
+) -> (
+	buffer: GPUMeshBuffers,
+	err: vk.Result,
+) {
+	vertexBufferSize := cast(vk.DeviceSize)(len(vertices) * size_of(Vertex))
+	indexBufferSize := cast(vk.DeviceSize)(len(indices) * size_of(u32))
+
+	newSurface: GPUMeshBuffers
+
+	newSurface.vertexBuffer = create_buffer(
+		engine,
+		vertexBufferSize,
+		{.STORAGE_BUFFER, .TRANSFER_DST, .SHADER_DEVICE_ADDRESS},
+		.Gpu_Only,
+	) or_return
+
+	deviceAdressInfo: vk.BufferDeviceAddressInfo = {
+		sType  = .BUFFER_DEVICE_ADDRESS_INFO,
+		buffer = newSurface.vertexBuffer.buffer,
+	}
+	newSurface.vertexBufferAddress = vk.GetBufferDeviceAddress(
+		engine.device.device,
+		&deviceAdressInfo,
+	)
+
+	newSurface.indexBuffer = create_buffer(
+		engine,
+		indexBufferSize,
+		{.INDEX_BUFFER, .TRANSFER_DST},
+		.Gpu_Only,
+	) or_return
+
+	staging := create_buffer(
+		engine,
+		vertexBufferSize + indexBufferSize,
+		{.TRANSFER_SRC},
+		.Cpu_Only,
+	) or_return
+	defer destroy_buffer(engine, staging)
+
+	data: rawptr = ---
+
+	vma.map_memory(engine.allocator, staging.allocation, &data)
+	defer vma.unmap_memory(engine.allocator, staging.allocation)
+
+	mem.copy(data, raw_data(vertices), cast(int)vertexBufferSize)
+
+	mem.copy(
+		mem.ptr_offset(cast([^]u8)data, vertexBufferSize),
+		raw_data(indices),
+		cast(int)indexBufferSize,
+	)
+
+	UserData :: struct {
+		staging:    AllocatedBuffer,
+		newSurface: GPUMeshBuffers,
+	}
+
+	{
+		cmd := immediate_start(engine) or_return
+
+		vertexCopy: vk.BufferCopy = {}
+		vertexCopy.dstOffset = 0
+		vertexCopy.srcOffset = 0
+		vertexCopy.size = vertexBufferSize
+
+		vk.CmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy)
+
+		indexCopy: vk.BufferCopy = {}
+		indexCopy.dstOffset = 0
+		indexCopy.srcOffset = vertexBufferSize
+		indexCopy.size = indexBufferSize
+
+		vk.CmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy)
+
+		immediate_submit(engine, cmd) or_return
+	}
+
+	buffer = newSurface
+
+	return
+}
+
+init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
+	err: LoadShaderError = nil
+	triangleFragShader: vk.ShaderModule
+	triangleFragShader, err = load_shader_module(
+		"shaders/color_triangle.frag.spv",
+		engine.device.device,
+	)
+	if err == nil {
+		log.info("Triangle fragment shader succesfully loaded")
+	} else {
+		log.errorf("Failed to load triangle fragment shader: %s", err)
+	}
+	defer vk.DestroyShaderModule(engine.device.device, triangleFragShader, nil)
+
+	triangleVertexShader: vk.ShaderModule
+	triangleVertexShader, err = load_shader_module(
+		"shaders/color_triangle_mesh.vert.spv",
+		engine.device.device,
+	)
+	if err == nil {
+		log.info("Triangle vertex shader succesfully loaded")
+	} else {
+		log.errorf("Failed to load triangle vertex shader: %s", err)
+	}
+	defer vk.DestroyShaderModule(engine.device.device, triangleVertexShader, nil)
+
+	bufferRange: vk.PushConstantRange = {}
+	bufferRange.offset = 0
+	bufferRange.size = size_of(GPUDrawPushConstants)
+	bufferRange.stageFlags = {.VERTEX}
+
+	pipeline_layout_info: vk.PipelineLayoutCreateInfo = pipeline_layout_create_info()
+	pipeline_layout_info.pPushConstantRanges = &bufferRange
+	pipeline_layout_info.pushConstantRangeCount = 1
+
+	vk.CreatePipelineLayout(
+		engine.device.device,
+		&pipeline_layout_info,
+		nil,
+		&engine.meshPipelineLayout,
+	) or_return
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyPipelineLayout(engine.device.device, engine.meshPipelineLayout, nil)
+	})
+
+	pipelineBuilder: PipelineBuilder
+	pipeline_builder_clear(&pipelineBuilder)
+
+	//use the triangle layout we created
+	pipelineBuilder.pipelineLayout = engine.meshPipelineLayout
+	//connecting the vertex and pixel shaders to the pipeline
+	pipeline_builder_set_shaders(&pipelineBuilder, triangleVertexShader, triangleFragShader)
+	//it will draw triangles
+	pipeline_builder_set_topology(&pipelineBuilder, .TRIANGLE_LIST)
+	//filled triangles
+	pipeline_builder_set_polygon_mode(&pipelineBuilder, .FILL)
+	//no backface culling
+	pipeline_builder_set_cull_mode(&pipelineBuilder, {}, .CLOCKWISE)
+	//no multisampling
+	pipeline_builder_set_multisampling_none(&pipelineBuilder)
+	//no blending
+	pipeline_builder_disable_blending(&pipelineBuilder)
+
+	pipeline_builder_disable_depthtest(&pipelineBuilder)
+
+	//connect the image format we will draw into, from draw image
+	pipeline_builder_set_color_attachment_format(&pipelineBuilder, engine.draw_image.image_format)
+	pipeline_builder_set_depth_format(&pipelineBuilder, .UNDEFINED)
+
+	//finally build the pipeline
+	engine.meshPipeline = pipeline_builder_build(&pipelineBuilder, engine.device.device) or_return
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyPipeline(engine.device.device, engine.meshPipeline, nil)
+	})
+
+	return .SUCCESS
+}
+
+init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
+	rect_vertices: [4]Vertex
+
+	rect_vertices[0].position = {0.5, -0.5, 0}
+	rect_vertices[1].position = {0.5, 0.5, 0}
+	rect_vertices[2].position = {-0.5, -0.5, 0}
+	rect_vertices[3].position = {-0.5, 0.5, 0}
+
+	rect_vertices[0].color = {0, 0, 0, 1}
+	rect_vertices[1].color = {0.5, 0.5, 0.5, 1}
+	rect_vertices[2].color = {1, 0, 0, 1}
+	rect_vertices[3].color = {0, 1, 0, 1}
+
+	rect_indices: [6]u32
+
+	rect_indices[0] = 0
+	rect_indices[1] = 1
+	rect_indices[2] = 2
+
+	rect_indices[3] = 2
+	rect_indices[4] = 1
+	rect_indices[5] = 3
+
+	engine.rectangle = uploadMesh(engine, rect_indices[:], rect_vertices[:]) or_return
+
+	//delete the rectangle data on engine shutdown
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		destroy_buffer(engine, engine.rectangle.indexBuffer)
+		destroy_buffer(engine, engine.rectangle.vertexBuffer)
+	})
+
+	return .SUCCESS
 }
