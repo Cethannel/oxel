@@ -10,17 +10,11 @@
   outputs = { self, nixpkgs, flake-utils, nixgl }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        # Apply nixGL overlay correctly (single function, not .overlays attrset)
-        pkgs = import nixpkgs {
-          inherit system;
-          #overlays = [ nixgl.overlay ];  # ← this is usually the right one
-          # If the above fails with "attribute 'overlay' missing", try:
-          # overlays = [ nixgl.overlays.default ];
-        };
+        pkgs = import nixpkgs { inherit system; };
 
         runtimeLibs = with pkgs; [
           vulkan-loader
-          vulkan-validation-layers  # good for dev/debug
+          vulkan-validation-layers
           SDL2
           wayland
           libxkbcommon
@@ -31,15 +25,15 @@
           libXinerama
           freetype
           harfbuzz
-          libcxx  # if you need libc++ explicitly
+          libcxx
         ];
 
-				pythonWithPly = pkgs.python3.withPackages (ps: with ps; [
-					ply   # ← this is python3Packages.ply
-					# You can add more here later if dear_bindings needs them
-				]);
+        pythonWithPly = pkgs.python3.withPackages (ps: [ ps.ply ]);
 
-        cppStdlib = pkgs.stdenv.cc.cc.lib;  # for -lstdc++
+        cppStdlib = pkgs.stdenv.cc.cc.lib;
+
+        # Path to Odin's own vendored cgltf static lib (the one that was also failing)
+        cgltfA = "${pkgs.odin}/share/vendor/cgltf/lib/cgltf.a";
 
       in {
         packages.default = pkgs.stdenv.mkDerivation {
@@ -49,39 +43,41 @@
           src = ./.;
 
           nativeBuildInputs = with pkgs; [ odin clang makeWrapper pkg-config pythonWithPly ];
-          buildInputs = runtimeLibs ++ (with pkgs; [
-            cppStdlib
-            vulkan-headers
-            wayland-protocols
-						tree
-						python3
-						git
-            # nixgl stuff if you want to wrap the binary with it later
-          ]);
+          buildInputs = runtimeLibs ++ ( with pkgs; [ cppStdlib vulkan-headers wayland-protocols ]);
 
-          buildPhase = ''
-            echo "Compiling Odin sources to objects..."
-            # If your project is a package (multiple files), this works.
-            # If single-file (e.g. main.odin), add -file:
-            # odin build main.odin -file -o:speed -build-mode:obj -out:odin.obj
-						# ---- imgui ----
-						pushd vendor/gitlab.com/L-4/odin-imgui
-						# assuming it has a build.py or similar; adjust to whatever builds imgui_linux_x64.a
-						python build.py linux    # ← or whatever command creates the .a
-						# or if it uses a Makefile / odin build ... -build-mode:lib etc.
-						popd
+                    buildPhase = ''
+            echo "=== Building vendored static libs ==="
 
-						# ---- VMA ----
-						pushd vendor/vma
-						# VMA is header-only in many cases, but if you have a .odin + .a build step:
-						# odin build . -build-mode:lib -o:speed -out:libvma_linux_x86_64.a   # adjust
-						# or use premade build script if present
-						popd
+            pushd vendor/gitlab.com/L-4/odin-imgui
+            python build.py linux
+            popd
 
-						tree .
-						pwd
-            odin build . -o:speed
-						echo "Built"
+            pushd vma
+            odin build . -build-mode:lib -o:speed -out:libvma_linux_x86_64.a
+            popd
+
+            ls -lah vendor/gitlab.com/L-4/odin-imgui/imgui_linux_x64.a
+            ls -lah vma/libvma_linux_x86_64.a
+
+            echo "=== Compiling Odin to single object ==="
+            odin build . -build-mode:obj -o:speed -out:project.o
+
+            echo "=== Manual linking — static libs LAST + -lm ==="
+            clang project.o \
+              -o odin-project \
+              -L${pkgs.lib.makeLibraryPath runtimeLibs} \
+              -L${pkgs.lib.makeLibraryPath [cppStdlib]} \
+              -lvulkan \
+              -lSDL2 \
+              -lwayland-client -lwayland-egl \
+              -lxkbcommon \
+              -lX11 -lXcursor -lXi -lXrandr -lXinerama \
+              -lfreetype -lharfbuzz \
+              -lstdc++ \
+              -lm \                        # ← added for floorf, sinf, etc.
+              vendor/gitlab.com/L-4/odin-imgui/imgui_linux_x64.a \
+              vma/libvma_linux_x86_64.a \
+              ${cgltfA}
           '';
 
           installPhase = ''
@@ -105,14 +101,10 @@
           packages = with pkgs; [ odin clang ] ++ runtimeLibs ++ [ cppStdlib ] ++ [nixgl.packages.${system}.nixVulkanIntel];
 
           shellHook = ''
-            echo "Odin dev shell with manual link setup"
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (runtimeLibs ++ [cppStdlib])}:$LD_LIBRARY_PATH"
+            echo "Odin dev shell ready - use 'odin build . -o:speed' for fast iteration (runtime libs are on PATH)"
           '';
         };
-
-        # Optional: if you want to run with nixGL wrapper (e.g. nixGLIntel or auto-default)
-        # packages.nixgl-wrapped = pkgs.nixgl.auto.nixGLDefault self.packages.${system}.default;
-        # apps.nixgl-run = flake-utils.lib.mkApp { drv = self.packages.${system}.nixgl-wrapped; };
       }
     );
 }

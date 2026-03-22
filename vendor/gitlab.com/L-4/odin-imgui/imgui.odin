@@ -1091,13 +1091,7 @@ TableColumnSortSpecs :: struct {
 	SortDirection: SortDirection, // ImGuiSortDirection_Ascending or ImGuiSortDirection_Descending
 }
 
-Vector_Wchar :: struct { // Instantiation of ImVector<ImWchar>
-	Size:     c.int,
-	Capacity: c.int,
-	Data:     ^Wchar,
-}
-
-Vector_TextFilter_ImGuiTextRange :: struct { // Instantiation of ImVector<ImGuiTextFilter_ImGuiTextRange>
+Vector_TextRange :: struct { // Instantiation of ImVector<ImGuiTextRange>
 	Size:     c.int,
 	Capacity: c.int,
 	Data:     ^TextFilter_ImGuiTextRange,
@@ -1121,6 +1115,12 @@ Vector_SelectionRequest :: struct { // Instantiation of ImVector<ImGuiSelectionR
 	Data:     ^SelectionRequest,
 }
 
+Vector_DrawChannel :: struct { // Instantiation of ImVector<ImDrawChannel>
+	Size:     c.int,
+	Capacity: c.int,
+	Data:     ^DrawChannel,
+}
+
 Vector_DrawCmd :: struct { // Instantiation of ImVector<ImDrawCmd>
 	Size:     c.int,
 	Capacity: c.int,
@@ -1131,12 +1131,6 @@ Vector_DrawIdx :: struct { // Instantiation of ImVector<ImDrawIdx>
 	Size:     c.int,
 	Capacity: c.int,
 	Data:     ^DrawIdx,
-}
-
-Vector_DrawChannel :: struct { // Instantiation of ImVector<ImDrawChannel>
-	Size:     c.int,
-	Capacity: c.int,
-	Data:     ^DrawChannel,
 }
 
 Vector_DrawVert :: struct { // Instantiation of ImVector<ImDrawVert>
@@ -1203,6 +1197,12 @@ Vector_float :: struct { // Instantiation of ImVector<float>
 	Size:     c.int,
 	Capacity: c.int,
 	Data:     ^f32,
+}
+
+Vector_Wchar :: struct { // Instantiation of ImVector<ImWchar>
+	Size:     c.int,
+	Capacity: c.int,
+	Data:     ^Wchar,
 }
 
 Vector_FontGlyph :: struct { // Instantiation of ImVector<ImFontGlyph>
@@ -1526,7 +1526,7 @@ TextFilter_ImGuiTextRange :: struct {
 // Helper: Parse and apply text filters. In format "aaaaa[,bbbb][,ccccc]"
 TextFilter :: struct {
 	InputBuf:  [256]c.char,
-	Filters:   Vector_TextFilter_ImGuiTextRange,
+	Filters:   Vector_TextRange,
 	CountGrep: c.int,
 }
 
@@ -1942,9 +1942,9 @@ PlatformIO :: struct {
 	Platform_DestroyWindow:           proc "c" (vp: ^Viewport),                                                                     // N . U . D  //
 	Platform_ShowWindow:              proc "c" (vp: ^Viewport),                                                                     // . . U . .  // Newly created windows are initially hidden so SetWindowPos/Size/Title can be called on them before showing the window
 	Platform_SetWindowPos:            proc "c" (vp: ^Viewport, pos: Vec2),                                                          // . . U . .  // Set platform window position (given the upper-left corner of client area)
-	Platform_GetWindowPos:            proc "c" (vp: ^Viewport) -> Vec2,                                                             // N . . . .  //
+	Platform_GetWindowPos:            proc "c" (vp: ^Viewport) -> Vec2,                                                             // N . . . .  // (Use ImGuiPlatformIO_SetPlatform_GetWindowPos() to set this from C, otherwise you will likely encounter stack corruption)
 	Platform_SetWindowSize:           proc "c" (vp: ^Viewport, size: Vec2),                                                         // . . U . .  // Set platform window client area size (ignoring OS decorations such as OS title bar etc.)
-	Platform_GetWindowSize:           proc "c" (vp: ^Viewport) -> Vec2,                                                             // N . . . .  // Get platform window client area size
+	Platform_GetWindowSize:           proc "c" (vp: ^Viewport) -> Vec2,                                                             // N . . . .  // Get platform window client area size (Use ImGuiPlatformIO_SetPlatform_GetWindowSize() to set this from C, otherwise you will likely encounter stack corruption)
 	Platform_SetWindowFocus:          proc "c" (vp: ^Viewport),                                                                     // N . . . .  // Move window to front and set input focus
 	Platform_GetWindowFocus:          proc "c" (vp: ^Viewport) -> bool,                                                             // . . U . .  //
 	Platform_GetWindowMinimized:      proc "c" (vp: ^Viewport) -> bool,                                                             // N . . . .  // Get platform window minimized state. When minimized, we generally won't attempt to get/set size and contents will be culled more easily
@@ -1955,7 +1955,7 @@ PlatformIO :: struct {
 	Platform_SwapBuffers:             proc "c" (vp: ^Viewport, render_arg: rawptr),                                                 // . . . R .  // (Optional) Call Present/SwapBuffers (platform side! This is often unused!). 'render_arg' is the value passed to RenderPlatformWindowsDefault().
 	Platform_GetWindowDpiScale:       proc "c" (vp: ^Viewport) -> f32,                                                              // N . . . .  // (Optional) [BETA] FIXME-DPI: DPI handling: Return DPI scale for this viewport. 1.0f = 96 DPI.
 	Platform_OnChangedViewport:       proc "c" (vp: ^Viewport),                                                                     // . F . . .  // (Optional) [BETA] FIXME-DPI: DPI handling: Called during Begin() every time the viewport we are outputting into changes, so backend has a chance to swap fonts to adjust style.
-	Platform_GetWindowWorkAreaInsets: proc "c" (vp: ^Viewport) -> Vec4,                                                             // N . . . .  // (Optional) [BETA] Get initial work area inset for the viewport (won't be covered by main menu bar, dockspace over viewport etc.). Default to (0,0),(0,0). 'safeAreaInsets' in iOS land, 'DisplayCutout' in Android land.
+	Platform_GetWindowWorkAreaInsets: proc "c" (vp: ^Viewport) -> Vec4,                                                             // N . . . .  // (Optional) [BETA] Get initial work area inset for the viewport (won't be covered by main menu bar, dockspace over viewport etc.). Default to (0,0),(0,0). 'safeAreaInsets' in iOS land, 'DisplayCutout' in Android land. (Use ImGuiPlatformIO_SetPlatform_GetWindowWorkAreaInsets() to set this from C, otherwise you will likely encounter stack corruption)
 	Platform_CreateVkSurface:         proc "c" (vp: ^Viewport, vk_inst: u64, vk_allocators: rawptr, out_vk_surface: ^u64) -> c.int, // (Optional) For a Vulkan Renderer to call into Platform code (since the surface creation needs to tie them both).
 	// Renderer Backend functions (e.g. DirectX, OpenGL, Vulkan) ------------ Called by -----
 	Renderer_CreateWindow:  proc "c" (vp: ^Viewport),                     // . . U . .  // Create swap chain, frame buffers etc. (called after Platform_CreateWindow)
@@ -2674,14 +2674,17 @@ foreign lib {
 	// (Optional) Platform/OS interface for multi-viewport support
 	// Read comments around the ImGuiPlatformIO structure for more details.
 	// Note: You may use GetWindowViewport() to get the current viewport of the current window.
-	@(link_name="ImGui_UpdatePlatformWindows")        UpdatePlatformWindows        :: proc()                                                                     --- // call in main loop. will call CreateWindow/ResizeWindow/etc. platform functions for each secondary viewport, and DestroyWindow for each inactive viewport.
-	@(link_name="ImGui_RenderPlatformWindowsDefault") RenderPlatformWindowsDefault :: proc(platform_render_arg: rawptr = nil, renderer_render_arg: rawptr = nil) --- // call in main loop. will call RenderWindow/SwapBuffers platform functions for each secondary viewport which doesn't have the ImGuiViewportFlags_Minimized flag set. May be reimplemented by user for custom rendering needs.
-	@(link_name="ImGui_DestroyPlatformWindows")       DestroyPlatformWindows       :: proc()                                                                     --- // call DestroyWindow platform functions for all viewports. call from backend Shutdown() if you need to close platform windows before imgui shutdown. otherwise will be called by DestroyContext().
-	@(link_name="ImGui_FindViewportByID")             FindViewportByID             :: proc(id: ID) -> ^Viewport                                                  --- // this is a helper for backends.
-	@(link_name="ImGui_FindViewportByPlatformHandle") FindViewportByPlatformHandle :: proc(platform_handle: rawptr) -> ^Viewport                                 --- // this is a helper for backends. the type platform_handle is decided by the backend (e.g. HWND, MyWindow*, GLFWwindow* etc.)
-	@(link_name="ImVector_Construct")                 Vector_Construct             :: proc(vector: rawptr)                                                       --- // Construct a zero-size ImVector<> (of any type). This is primarily useful when calling ImFontGlyphRangesBuilder_BuildRanges()
-	@(link_name="ImVector_Destruct")                  Vector_Destruct              :: proc(vector: rawptr)                                                       --- // Destruct an ImVector<> (of any type). Important: Frees the vector memory but does not call destructors on contained objects (if they have them)
-	@(link_name="ImGuiStyle_ScaleAllSizes")           Style_ScaleAllSizes          :: proc(self: ^Style, scale_factor: f32)                                      ---
+	@(link_name="ImGui_UpdatePlatformWindows")                         UpdatePlatformWindows                          :: proc()                                                                     --- // call in main loop. will call CreateWindow/ResizeWindow/etc. platform functions for each secondary viewport, and DestroyWindow for each inactive viewport.
+	@(link_name="ImGui_RenderPlatformWindowsDefault")                  RenderPlatformWindowsDefault                   :: proc(platform_render_arg: rawptr = nil, renderer_render_arg: rawptr = nil) --- // call in main loop. will call RenderWindow/SwapBuffers platform functions for each secondary viewport which doesn't have the ImGuiViewportFlags_Minimized flag set. May be reimplemented by user for custom rendering needs.
+	@(link_name="ImGui_DestroyPlatformWindows")                        DestroyPlatformWindows                         :: proc()                                                                     --- // call DestroyWindow platform functions for all viewports. call from backend Shutdown() if you need to close platform windows before imgui shutdown. otherwise will be called by DestroyContext().
+	@(link_name="ImGui_FindViewportByID")                              FindViewportByID                               :: proc(id: ID) -> ^Viewport                                                  --- // this is a helper for backends.
+	@(link_name="ImGui_FindViewportByPlatformHandle")                  FindViewportByPlatformHandle                   :: proc(platform_handle: rawptr) -> ^Viewport                                 --- // this is a helper for backends. the type platform_handle is decided by the backend (e.g. HWND, MyWindow*, GLFWwindow* etc.)
+	@(link_name="ImVector_Construct")                                  Vector_Construct                               :: proc(vector: rawptr)                                                       --- // Construct a zero-size ImVector<> (of any type). This is primarily useful when calling ImFontGlyphRangesBuilder_BuildRanges()
+	@(link_name="ImVector_Destruct")                                   Vector_Destruct                                :: proc(vector: rawptr)                                                       --- // Destruct an ImVector<> (of any type). Important: Frees the vector memory but does not call destructors on contained objects (if they have them)
+	@(link_name="ImGuiPlatformIO_SetPlatform_GetWindowWorkAreaInsets") PlatformIO_SetPlatform_GetWindowWorkAreaInsets :: proc(getWindowWorkAreaInsetsFunc: proc "c" (vp: ^Viewport, result: ^Vec4)) --- // Set ImGuiPlatformIO::Platform_GetWindowWorkAreaInsets in a C-compatible mannner
+	@(link_name="ImGuiPlatformIO_SetPlatform_GetWindowPos")            PlatformIO_SetPlatform_GetWindowPos            :: proc(getWindowPosFunc: proc "c" (vp: ^Viewport, result: ^Vec2))            --- // Set ImGuiPlatformIO::Platform_GetWindowPos in a C-compatible mannner
+	@(link_name="ImGuiPlatformIO_SetPlatform_GetWindowSize")           PlatformIO_SetPlatform_GetWindowSize           :: proc(getWindowSizeFunc: proc "c" (vp: ^Viewport, result: ^Vec2))           --- // Set ImGuiPlatformIO::Platform_GetWindowSize in a C-compatible mannner
+	@(link_name="ImGuiStyle_ScaleAllSizes")                            Style_ScaleAllSizes                            :: proc(self: ^Style, scale_factor: f32)                                      ---
 	// Input Functions
 	@(link_name="ImGuiIO_AddKeyEvent")                       IO_AddKeyEvent                       :: proc(self: ^IO, key: Key, down: bool)                                                                     --- // Queue a new key down/up event. Key should be "translated" (as in, generally ImGuiKey_A matches the key end-user would use to emit an 'A' character)
 	@(link_name="ImGuiIO_AddKeyAnalogEvent")                 IO_AddKeyAnalogEvent                 :: proc(self: ^IO, key: Key, down: bool, v: f32)                                                             --- // Queue a new key down/up event for analog values (e.g. ImGuiKey_Gamepad_ values). Dead-zones should be handled by the backend.
@@ -2709,7 +2712,7 @@ foreign lib {
 	@(link_name="ImGuiPayload_IsPreview")                    Payload_IsPreview                    :: proc(self: ^Payload) -> bool                                                                              ---
 	@(link_name="ImGuiPayload_IsDelivery")                   Payload_IsDelivery                   :: proc(self: ^Payload) -> bool                                                                              ---
 	@(link_name="ImGuiTextFilter_ImGuiTextRange_empty")      TextFilter_ImGuiTextRange_empty      :: proc(self: ^TextFilter_ImGuiTextRange) -> bool                                                            ---
-	@(link_name="ImGuiTextFilter_ImGuiTextRange_split")      TextFilter_ImGuiTextRange_split      :: proc(self: ^TextFilter_ImGuiTextRange, separator: c.char, out: ^Vector_TextFilter_ImGuiTextRange)         ---
+	@(link_name="ImGuiTextFilter_ImGuiTextRange_split")      TextFilter_ImGuiTextRange_split      :: proc(self: ^TextFilter_ImGuiTextRange, separator: c.char, out: ^Vector_TextRange)                         ---
 	@(link_name="ImGuiTextFilter_Draw")                      TextFilter_Draw                      :: proc(self: ^TextFilter, label: cstring = "Filter (inc,-exc)", width: f32 = 0.0) -> bool                   --- // Helper calling InputText+Build
 	@(link_name="ImGuiTextFilter_PassFilter")                TextFilter_PassFilter                :: proc(self: ^TextFilter, text: cstring, text_end: cstring = nil) -> bool                                   ---
 	@(link_name="ImGuiTextFilter_Build")                     TextFilter_Build                     :: proc(self: ^TextFilter)                                                                                   ---
@@ -2968,11 +2971,11 @@ foreign lib {
 // TYPEDEFS
 ////////////////////////////////////////////////////////////
 
+DrawIdx :: c.ushort // Default: 16-bit (for maximum compatibility with renderer backends)
 // Scalar data types
-ID        :: c.uint   // A unique ID used by widgets (typically the result of hashing a stack of string)
-KeyChord  :: c.int    // -> ImGuiKey | ImGuiMod_XXX    // Flags: for IsKeyChordPressed(), Shortcut() etc. an ImGuiKey optionally OR-ed with one or more ImGuiMod_XXX values.
-TextureID :: u64      // Default: store a pointer or an integer fitting in a pointer (most renderer backends are ok with that)
-DrawIdx   :: c.ushort // Default: 16-bit (for maximum compatibility with renderer backends)
+ID        :: c.uint // A unique ID used by widgets (typically the result of hashing a stack of string)
+KeyChord  :: c.int  // -> ImGuiKey | ImGuiMod_XXX    // Flags: for IsKeyChordPressed(), Shortcut() etc. an ImGuiKey optionally OR-ed with one or more ImGuiMod_XXX values.
+TextureID :: u64    // Default: store a pointer or an integer fitting in a pointer (most renderer backends are ok with that)
 // Character types
 // (we generally use UTF-8 encoded string in the API. This is storage specifically for a decoded character used for keyboard input and display)
 Wchar32 :: rune     // A single decoded U32 character/code point. We encode them as multi bytes UTF-8 when used in strings.

@@ -144,15 +144,15 @@ def compile(backend_deps_names: typing.Set[str], all_sources: typing.List[str], 
         compile_flags = ['-DIMGUI_IMPL_API=extern\"C\"', "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS", "-DIMGUI_DISABLE_FILE_FUNCTIONS", "--target=wasm32", "-mbulk-memory", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-nostdlib++", "-fno-use-cxa-atexit"]
         assertx(has_tool("odin"), "odin not found!")
         root = exec(["odin", "root"], "Get odin root").strip()
-        compile_flags += ["--sysroot=" + root + "/vendor/libc"]
+        compile_flags.append("--sysroot=" + root + "/vendor/libc")
     else:
         compile_flags = platform_select({
             "windows": ['/DIMGUI_IMPL_API=extern\\\"C\\\"'],
             "linux, darwin": ['-DIMGUI_IMPL_API=extern\"C\"', "-fPIC", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-std=c++11"],
         })
 
-    if compile_debug: compile_flags += platform_select({ "windows": ["/Od", "/Z7"], "linux, darwin": ["-g", "-O0"] })
-    else: compile_flags += platform_select({ "windows": ["/O2"], "linux, darwin": ["-O3"] })
+    if compile_debug: compile_flags.extend(platform_select({ "windows": ["/Od", "/Z7"], "linux, darwin": ["-g", "-O0"] }))
+    else: compile_flags.extend(platform_select({ "windows": ["/O2"], "linux, darwin": ["-O3"] }))
 
     if not wasm:
         for backend_name in wanted_backends:
@@ -174,17 +174,29 @@ def compile(backend_deps_names: typing.Set[str], all_sources: typing.List[str], 
                 shutil.copy(pp("../../../github.com/ocornut/imgui/backends/imgui_impl_opengl3_loader.h"), "temp")
 
             for define in backend.get("defines", []): 
-                compile_flags += platform_select({ "windows": f"/D{define}", "linux, darwin": f"-D{define}" })
+                define_flag = platform_select({ 
+                    "windows": f"/D{define}", 
+                    "linux, darwin": f"-D{define}" 
+                })
+                compile_flags.append(define_flag)   # ← use .append() instead of +=
 
         # Add backend dependency include paths
         for backend_dep in backend_deps_names:
+            dep_path = backend_deps_reference.get(backend_dep, {"path": backend_dep})["path"]
+            include_path = "../../../github.com/{}/include".format(dep_path)
+
+            # Special override if needed (e.g., some repos have include/ subdir differently)
             if backend_dep == "vulkan":
                 include_path = "../../../github.com/KhronosGroup/Vulkan-Headers/include"
-            else:
-                include_path = path.join("../../../github.com", backend_deps_reference[backend_dep]["path"], "include")
+            elif backend_dep == "sdl2":
+                include_path = "../../../../github.com/libsdl-org/SDL/include"   # ← added
 
-            if platform_win32_like:  compile_flags += ["/I" + include_path]
-            elif platform_unix_like: compile_flags += ["-I" + include_path]
+            print(f"Adding include for {backend_dep}: {include_path}")  # ← debug print, remove later
+
+            if platform_win32_like:
+                compile_flags.append("/I" + include_path)
+            elif platform_unix_like:
+                compile_flags.append("-I" + include_path)
 
     all_objects = []
     if platform_win32_like: 
@@ -196,6 +208,7 @@ def compile(backend_deps_names: typing.Set[str], all_sources: typing.List[str], 
 
     os.chdir("temp")
 
+    subprocess.run("pwd")
     if platform_win32_like:  exec_vcvars(["cl"] + compile_flags + ["/c"] + all_sources, "Compiling sources")
     elif platform_unix_like: exec(["clang"] + compile_flags + ["-c"] + all_sources, "Compiling sources")
 
