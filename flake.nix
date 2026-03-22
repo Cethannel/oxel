@@ -1,110 +1,67 @@
 {
-  description = "Odin Vulkan project with manual linking to fix vendored static .a paths";
+  description = "Vulkan guide written in Odin";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
-    nixgl.url = "github:nix-community/nixGL";
   };
 
-  outputs = { self, nixpkgs, flake-utils, nixgl }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
+  outputs =
+    { self, nixpkgs }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
 
-        runtimeLibs = with pkgs; [
-          vulkan-loader
-          vulkan-validation-layers
-          SDL2
-          wayland
-          libxkbcommon
-          libX11
-          libXcursor
-          libXi
-          libXrandr
-          libXinerama
-          freetype
-          harfbuzz
-          libcxx
+      runtimeLibs = with pkgs; [
+        vulkan-loader
+        SDL2
+        stdenv.cc.cc.lib
+				libcxx
+      ];
+    in
+    {
+      packages.${system}.default = pkgs.stdenv.mkDerivation {
+        pname = "vulkan-guide";
+        version = "0.1.0";
+        src = ./.;
+
+        nativeBuildInputs = with pkgs; [
+          odin
+          autoPatchelfHook
         ];
 
-        pythonWithPly = pkgs.python3.withPackages (ps: [ ps.ply ]);
+        buildInputs = runtimeLibs ++ (with pkgs; [
+          vulkan-headers
+          vulkan-validation-layers
+        ]);
 
-        cppStdlib = pkgs.stdenv.cc.cc.lib;
+        buildPhase = ''
+          odin build . -out:vulkan_guide
+        '';
 
-        # Path to Odin's own vendored cgltf static lib (the one that was also failing)
-        cgltfA = "${pkgs.odin}/share/vendor/cgltf/lib/cgltf.a";
+        installPhase = ''
+          mkdir -p $out/bin $out/share/vulkan-guide/shaders
+          cp vulkan_guide $out/bin/
+          cp shaders/*.spv $out/share/vulkan-guide/shaders/
+        '';
+      };
 
-      in {
-        packages.default = pkgs.stdenv.mkDerivation {
-          pname = "odin-vulkan-project";
-          version = "0.1.0";
+      devShells.${system}.default = pkgs.mkShell {
+        packages = with pkgs; [
+          odin
+          ols
+          vulkan-tools
+          vulkan-validation-layers
+          glslang
+        ];
 
-          src = ./.;
+        buildInputs = runtimeLibs ++ (with pkgs; [
+          vulkan-headers
+          SDL2.dev
+        ]);
 
-          nativeBuildInputs = with pkgs; [ odin clang makeWrapper pkg-config pythonWithPly ];
-          buildInputs = runtimeLibs ++ ( with pkgs; [ cppStdlib vulkan-headers wayland-protocols ]);
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
 
-                    buildPhase = ''
-            echo "=== Building vendored static libs ==="
-
-            pushd vendor/gitlab.com/L-4/odin-imgui
-            python build.py linux
-            popd
-
-            pushd vma
-            odin build . -build-mode:lib -o:speed -out:libvma_linux_x86_64.a
-            popd
-
-            ls -lah vendor/gitlab.com/L-4/odin-imgui/imgui_linux_x64.a
-            ls -lah vma/libvma_linux_x86_64.a
-
-            echo "=== Compiling Odin to single object ==="
-            odin build . -build-mode:obj -o:speed -out:project.o
-
-            echo "=== Manual linking — static libs LAST + -lm ==="
-            clang project.o \
-              -o odin-project \
-              -L${pkgs.lib.makeLibraryPath runtimeLibs} \
-              -L${pkgs.lib.makeLibraryPath [cppStdlib]} \
-              -lvulkan \
-              -lSDL2 \
-              -lwayland-client -lwayland-egl \
-              -lxkbcommon \
-              -lX11 -lXcursor -lXi -lXrandr -lXinerama \
-              -lfreetype -lharfbuzz \
-              -lstdc++ \
-              -lm \                        # ← added for floorf, sinf, etc.
-              vendor/gitlab.com/L-4/odin-imgui/imgui_linux_x64.a \
-              vma/libvma_linux_x86_64.a \
-              ${cgltfA}
-          '';
-
-          installPhase = ''
-            mkdir -p $out/bin
-            cp odin-project $out/bin/
-          '';
-
-          postFixup = ''
-            wrapProgram $out/bin/odin-project \
-              --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeLibs}"
-          '';
-
-          meta.platforms = pkgs.lib.platforms.linux;
-        };
-
-        apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
-        };
-
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ odin clang ] ++ runtimeLibs ++ [ cppStdlib ] ++ [nixgl.packages.${system}.nixVulkanIntel];
-
-          shellHook = ''
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (runtimeLibs ++ [cppStdlib])}:$LD_LIBRARY_PATH"
-            echo "Odin dev shell ready - use 'odin build . -o:speed' for fast iteration (runtime libs are on PATH)"
-          '';
-        };
-      }
-    );
+        VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+      };
+    };
 }

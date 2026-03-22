@@ -3,6 +3,7 @@ package engine
 import "core:c"
 import "core:flags"
 import "core:log"
+import "core:math/linalg"
 import "core:mem"
 import sdl2 "vendor:sdl2"
 import vk "vendor:vulkan"
@@ -93,6 +94,7 @@ VulkanEngine :: struct {
 	graphics_queue_family:        u32,
 	allocator:                    vma.Allocator,
 	draw_image:                   AllocateImage,
+	depth_image:                  AllocateImage,
 	draw_extent:                  vk.Extent2D,
 	//
 	global_descriptor_allocator:  DescriptorAllocator,
@@ -111,12 +113,8 @@ VulkanEngine :: struct {
 	currentBackgroundEffect:      int,
 
 	//
-	trianglePipelineLayout:       vk.PipelineLayout,
-	trianglePipeline:             vk.Pipeline,
-	//
 	meshPipelineLayout:           vk.PipelineLayout,
 	meshPipeline:                 vk.Pipeline,
-	rectangle:                    GPUMeshBuffers,
 
 	// :gltf test
 	testMeshes:                   [dynamic]MeshAsset,
@@ -289,6 +287,7 @@ draw :: proc(engine: ^VulkanEngine) {
 	draw_background(engine, cmd)
 
 	transition_image(cmd, engine.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
+	transition_image(cmd, engine.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)
 
 	draw_geometry(engine, cmd)
 
@@ -521,6 +520,46 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		vk.DestroyImageView(engine.device.device, engine.draw_image.image_view, nil)
 		vma.destroy_image(engine.allocator, engine.draw_image.image, engine.draw_image.allocation)
+	})
+
+	engine.depth_image.image_format = .D32_SFLOAT
+	engine.depth_image.image_extent = drawImageExtent
+	depthImageUsages: vk.ImageUsageFlags = {.DEPTH_STENCIL_ATTACHMENT}
+
+	dimg_info := image_create_info(
+		engine.depth_image.image_format,
+		depthImageUsages,
+		drawImageExtent,
+	)
+
+	//allocate and create the image
+	vma.create_image(
+		engine.allocator,
+		dimg_info,
+		rimg_allocinfo,
+		&engine.depth_image.image,
+		&engine.depth_image.allocation,
+		nil,
+	)
+
+	//build a image-view for the draw image to use for rendering
+	dview_info := imageview_create_info(
+		engine.depth_image.image_format,
+		engine.depth_image.image,
+		{.DEPTH},
+	)
+
+	vkb.vk_check(
+		vk.CreateImageView(engine.device.device, &dview_info, nil, &engine.depth_image.image_view),
+	) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroyImageView(engine.device.device, engine.depth_image.image_view, nil)
+		vma.destroy_image(
+			engine.allocator,
+			engine.depth_image.image,
+			engine.depth_image.allocation,
+		)
 	})
 
 	//add to deletion queues
@@ -1058,12 +1097,7 @@ init_pipelines :: proc(engine: ^VulkanEngine) {
 		fmt.panicf("Failed to create pipeline: %e", err)
 	}
 
-	vk_err := init_triangle_pipeline(engine)
-	if vk_err != .SUCCESS {
-		fmt.panicf("Failed to create pipeline: %e", vk_err)
-	}
-
-	vk_err = init_mesh_pipeline(engine)
+	vk_err := init_mesh_pipeline(engine)
 	if vk_err != .SUCCESS {
 		fmt.panicf("Failed to create pipeline: %e", vk_err)
 	}
@@ -1291,6 +1325,23 @@ attachment_info :: proc(
 	return colorAttachment
 }
 
+depth_attachment_info :: proc(
+	view: vk.ImageView,
+	layout: vk.ImageLayout = .COLOR_ATTACHMENT_OPTIMAL,
+) -> vk.RenderingAttachmentInfo {
+	depthAttachment: vk.RenderingAttachmentInfo = {}
+	depthAttachment.sType = .RENDERING_ATTACHMENT_INFO
+	depthAttachment.pNext = nil
+
+	depthAttachment.imageView = view
+	depthAttachment.imageLayout = layout
+	depthAttachment.loadOp = .CLEAR
+	depthAttachment.storeOp = .STORE
+	depthAttachment.clearValue.depthStencil.depth = 0.0
+
+	return depthAttachment
+}
+
 rendering_info :: proc(
 	renderExtent: vk.Extent2D,
 	colorAttachment: ^vk.RenderingAttachmentInfo,
@@ -1310,81 +1361,23 @@ rendering_info :: proc(
 	return renderInfo
 }
 
-init_triangle_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
-	err: LoadShaderError = nil
-	triangleFragShader: vk.ShaderModule
-	triangleFragShader, err = load_shader_module(
-		"shaders/color_triangle.frag.spv",
-		engine.device.device,
-	)
-	if err == nil {
-		log.info("Triangle fragment shader succesfully loaded")
-	} else {
-		log.errorf("Failed to load triangle fragment shader: %s", err)
-	}
-	defer vk.DestroyShaderModule(engine.device.device, triangleFragShader, nil)
-
-	triangleVertexShader: vk.ShaderModule
-	triangleVertexShader, err = load_shader_module(
-		"shaders/color_triangle.vert.spv",
-		engine.device.device,
-	)
-	if err == nil {
-		log.info("Triangle vertex shader succesfully loaded")
-	} else {
-		log.errorf("Failed to load triangle vertex shader: %s", err)
-	}
-	defer vk.DestroyShaderModule(engine.device.device, triangleVertexShader, nil)
-
-	pipeline_layout_info := pipeline_layout_create_info()
-	vk.CreatePipelineLayout(
-		engine.device.device,
-		&pipeline_layout_info,
-		nil,
-		&engine.trianglePipelineLayout,
-	) or_return
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		vk.DestroyPipelineLayout(engine.device.device, engine.trianglePipelineLayout, nil)
-	})
-
-	pipelineBuilder: PipelineBuilder
-	pipeline_builder_clear(&pipelineBuilder)
-	pipelineBuilder.pipelineLayout = engine.trianglePipelineLayout
-	pipeline_builder_set_shaders(&pipelineBuilder, triangleVertexShader, triangleFragShader)
-	pipeline_builder_set_topology(&pipelineBuilder, .TRIANGLE_LIST)
-	pipeline_builder_set_polygon_mode(&pipelineBuilder, .FILL)
-	pipeline_builder_set_cull_mode(&pipelineBuilder, {}, .CLOCKWISE)
-	pipeline_builder_set_multisampling_none(&pipelineBuilder)
-	pipeline_builder_disable_blending(&pipelineBuilder)
-	pipeline_builder_disable_depthtest(&pipelineBuilder)
-
-	pipeline_builder_set_color_attachment_format(&pipelineBuilder, engine.draw_image.image_format)
-	pipeline_builder_set_depth_format(&pipelineBuilder, .UNDEFINED)
-
-	engine.trianglePipeline = pipeline_builder_build(
-		&pipelineBuilder,
-		engine.device.device,
-	) or_return
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		vk.DestroyPipeline(engine.device.device, engine.trianglePipeline, nil)
-	})
-
-	return .SUCCESS
-}
-
 draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	colorAttachment := attachment_info(
 		engine.draw_image.image_view,
 		nil,
 		.COLOR_ATTACHMENT_OPTIMAL,
 	)
+	depthAttachment := depth_attachment_info(
+		engine.depth_image.image_view,
+		.DEPTH_ATTACHMENT_OPTIMAL,
+	)
 
-	renderInfo := rendering_info(engine.draw_extent, &colorAttachment, nil)
+	renderInfo := rendering_info(engine.draw_extent, &colorAttachment, &depthAttachment)
 
 	vk.CmdBeginRendering(cmd, &renderInfo)
 	defer vk.CmdEndRendering(cmd)
 
-	vk.CmdBindPipeline(cmd, .GRAPHICS, engine.trianglePipeline)
+	vk.CmdBindPipeline(cmd, .GRAPHICS, engine.meshPipeline)
 
 	viewport: vk.Viewport = {}
 	viewport.x = 0
@@ -1404,14 +1397,23 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
-	//launch a draw command to draw 3 vertices
-	vk.CmdDraw(cmd, 3, 1, 0, 0)
-
-	vk.CmdBindPipeline(cmd, .GRAPHICS, engine.meshPipeline)
 
 	push_constants: GPUDrawPushConstants
 	push_constants.worldMatrix = 1.
-	push_constants.vertexBuffer = engine.rectangle.vertexBufferAddress
+
+	projection := linalg.matrix4_perspective(
+		math.to_radians_f32(70.),
+		f32(engine.draw_extent.width) / f32(engine.draw_extent.height),
+		10000., // near
+		0.1, // far
+		true,
+	)
+
+	// remove the projection[1][1] *= -1 line
+
+	view := linalg.transpose(linalg.matrix4_translate_f32({0, 0, -5}))
+	push_constants.worldMatrix = projection * view
+	push_constants.vertexBuffer = engine.testMeshes[2].meshBuffers.vertexBufferAddress
 
 	vk.CmdPushConstants(
 		cmd,
@@ -1422,9 +1424,16 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		&push_constants,
 	)
 
-	vk.CmdBindIndexBuffer(cmd, engine.rectangle.indexBuffer.buffer, 0, .UINT32)
+	vk.CmdBindIndexBuffer(cmd, engine.testMeshes[2].meshBuffers.indexBuffer.buffer, 0, .UINT32)
 
-	vk.CmdDrawIndexed(cmd, 6, 1, 0, 0, 0)
+	vk.CmdDrawIndexed(
+		cmd,
+		engine.testMeshes[2].surfaces[0].count,
+		1,
+		engine.testMeshes[2].surfaces[0].startIndex,
+		0,
+		0,
+	)
 }
 
 create_buffer :: proc(
@@ -1615,11 +1624,11 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	//no blending
 	pipeline_builder_disable_blending(&pipelineBuilder)
 
-	pipeline_builder_disable_depthtest(&pipelineBuilder)
+	pipeline_builder_enable_depthtest(&pipelineBuilder, true, .GREATER_OR_EQUAL)
 
 	//connect the image format we will draw into, from draw image
 	pipeline_builder_set_color_attachment_format(&pipelineBuilder, engine.draw_image.image_format)
-	pipeline_builder_set_depth_format(&pipelineBuilder, .UNDEFINED)
+	pipeline_builder_set_depth_format(&pipelineBuilder, engine.depth_image.image_format)
 
 	//finally build the pipeline
 	engine.meshPipeline = pipeline_builder_build(&pipelineBuilder, engine.device.device) or_return
@@ -1631,39 +1640,15 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 }
 
 init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
-	rect_vertices: [4]Vertex
-
-	rect_vertices[0].position = {0.5, -0.5, 0}
-	rect_vertices[1].position = {0.5, 0.5, 0}
-	rect_vertices[2].position = {-0.5, -0.5, 0}
-	rect_vertices[3].position = {-0.5, 0.5, 0}
-
-	rect_vertices[0].color = {0, 0, 0, 1}
-	rect_vertices[1].color = {0.5, 0.5, 0.5, 1}
-	rect_vertices[2].color = {1, 0, 0, 1}
-	rect_vertices[3].color = {0, 1, 0, 1}
-
-	rect_indices: [6]u32
-
-	rect_indices[0] = 0
-	rect_indices[1] = 1
-	rect_indices[2] = 2
-
-	rect_indices[3] = 2
-	rect_indices[4] = 1
-	rect_indices[5] = 3
-
-	engine.rectangle = uploadMesh(engine, rect_indices[:], rect_vertices[:]) or_return
-
-	//delete the rectangle data on engine shutdown
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		destroy_buffer(engine, engine.rectangle.indexBuffer)
-		destroy_buffer(engine, engine.rectangle.vertexBuffer)
-	})
-
 	ok: bool
 	engine.testMeshes, ok = loadGltfMeshes(engine, "assets/basicmesh.glb")
-	assert(ok, "Failed to load meshes")
+	fmt.assertf(ok, "Failed to load meshes: %s", "assets/basicmesh.glb")
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		for mesh in engine.testMeshes {
+			destroy_buffer(engine, mesh.meshBuffers.vertexBuffer)
+			destroy_buffer(engine, mesh.meshBuffers.indexBuffer)
+		}
+	})
 
 	return .SUCCESS
 }

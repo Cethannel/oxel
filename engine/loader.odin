@@ -1,5 +1,6 @@
 package engine
 
+import "core:fmt"
 import "core:log"
 import "core:strings"
 import "vendor:cgltf"
@@ -20,7 +21,7 @@ loadGltfMeshes :: proc(
 	filePath: string,
 ) -> (
 	meshes: [dynamic]MeshAsset,
-	ok: bool,
+	ok: bool = true,
 ) {
 	log.infof("Loading file: %s", filePath)
 
@@ -33,7 +34,12 @@ loadGltfMeshes :: proc(
 		ok = false
 		return
 	}
-	defer cgltf.free(data)
+	result = cgltf.load_buffers({}, data, cfilepath)
+	if result != .success {
+		log.errorf("Failed to load glfw file (%s), got error: %s", filePath, result)
+		ok = false
+		return
+	}
 
 	gltf: cgltf.asset
 	for mesh in data.meshes {
@@ -68,19 +74,23 @@ loadGltfMeshes :: proc(
 					panic("Failed to get POSITION attrib")
 				}
 
+				assert(!posAttrib.data.is_sparse, "Pos is sparse")
+				assert(posAttrib.data.stride == size_of(f32) * 3, "Size bad")
+
 				vertices_len := len(vertices)
 				resize(&vertices, cast(uint)vertices_len + posAttrib.data.count)
 
 				for i: uint = 0; i < posAttrib.data.count; i += 1 {
 					newvtx: Vertex
-					assert(
+					fmt.assertf(
 						cast(bool)cgltf.accessor_read_float(
 							posAttrib.data,
 							i,
 							raw_data(newvtx.position[:]),
 							3,
 						),
-						"Failed to access field",
+						"Failed to access field: %d",
+						i,
 					)
 					newvtx.normal = {1, 0, 0}
 					newvtx.color = 1.
@@ -152,8 +162,11 @@ loadGltfMeshes :: proc(
 		newMesh.meshBuffers =
 			uploadMesh(engine, indices[:], vertices[:]) or_else panic("Failed to uploadMesh")
 
+		log.info("Appending mesh")
 		append(&meshes, newMesh)
 	}
+
+	log.info("Loaded gltf")
 
 	return
 }
@@ -166,8 +179,11 @@ findAttribute :: proc(
 	attrib: ^cgltf.attribute = nil,
 	ok: bool = false,
 ) {
+	log.infof("Finding: %s", name)
 	for &a in attributes {
+		log.infof("Checking: %s", a.name)
 		if name == a.name {
+			ok = true
 			attrib = &a
 			return
 		}
