@@ -187,3 +187,25 @@ pipeline_builder_enable_depthtest :: proc(
 	pb.depthStencil.minDepthBounds = 0.
 	pb.depthStencil.maxDepthBounds = 1.
 }
+
+pipeline_builder_enable_blending_additive :: proc(pb: ^PipelineBuilder) {
+	pb.colorBlendAttachment.colorWriteMask = {.R, .G, .B, .A}
+	pb.colorBlendAttachment.blendEnable = true
+	pb.colorBlendAttachment.srcColorBlendFactor = .SRC_ALPHA
+	pb.colorBlendAttachment.dstColorBlendFactor = .ONE
+	pb.colorBlendAttachment.colorBlendOp = .ADD
+	pb.colorBlendAttachment.srcAlphaBlendFactor = .ONE
+	pb.colorBlendAttachment.dstAlphaBlendFactor = .ZERO
+	pb.colorBlendAttachment.alphaBlendOp = .ADD
+}
+
+pipeline_builder_enable_blending_alphablend :: proc(pb: ^PipelineBuilder) {
+	pb.colorBlendAttachment.colorWriteMask = {.R, .G, .B, .A}
+	pb.colorBlendAttachment.blendEnable = true
+	pb.colorBlendAttachment.srcColorBlendFactor = .SRC_ALPHA
+	pb.colorBlendAttachment.dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA
+	pb.colorBlendAttachment.colorBlendOp = .ADD
+	pb.colorBlendAttachment.srcAlphaBlendFactor = .ONE
+	pb.colorBlendAttachment.dstAlphaBlendFactor = .ZERO
+	pb.colorBlendAttachment.alphaBlendOp = .ADD
+}

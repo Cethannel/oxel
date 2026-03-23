@@ -96,6 +96,8 @@ VulkanEngine :: struct {
 	draw_image:                   AllocateImage,
 	depth_image:                  AllocateImage,
 	draw_extent:                  vk.Extent2D,
+	render_scale:                 f32,
+	resize_requested:             bool,
 	//
 	global_descriptor_allocator:  DescriptorAllocator,
 	draw_image_descriptors:       vk.DescriptorSet,
@@ -147,7 +149,7 @@ init :: proc() -> VulkanEngine {
 		0,
 		cast(c.int)engine.window_extent.width,
 		cast(c.int)engine.window_extent.height,
-		sdl2.WindowFlags{.VULKAN},
+		sdl2.WindowFlags{.VULKAN, .RESIZABLE},
 	)
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {sdl2.DestroyWindow(engine.window)})
 
@@ -170,6 +172,7 @@ init :: proc() -> VulkanEngine {
 
 	assert(init_default_data(&engine) == .SUCCESS, "Failed to init default data")
 
+	engine.render_scale = 1.0
 	engine.is_initialized = true
 
 	return engine
@@ -207,12 +210,19 @@ run :: proc(engine: ^VulkanEngine) {
 			continue
 		}
 
+		if (engine.resize_requested) {
+			log.info("Resizing swapchain")
+			assert(resize_swapchain(engine) == nil, "Failed to resize swapchain")
+		}
+
 		imgui_vulkan.NewFrame()
 		imgui_sdl2.NewFrame()
 		imgui.NewFrame()
 
 		if imgui.Begin("background") {
 			defer imgui.End()
+
+			imgui.SliderFloat("Render Scale", &engine.render_scale, 0.3, 1.)
 
 			selected := &engine.backgroundEffects[engine.currentBackgroundEffect]
 
@@ -249,10 +259,6 @@ draw :: proc(engine: ^VulkanEngine) {
 			1000000000,
 		),
 	)
-	assert(
-		vk.ResetFences(engine.device.device, 1, &get_current_frame(engine).render_fence) ==
-		.SUCCESS,
-	)
 
 	assert(get_current_frame(engine) != nil)
 	assert(engine.device != nil)
@@ -261,7 +267,7 @@ draw :: proc(engine: ^VulkanEngine) {
 	swap_semaphore := get_current_frame(engine).swapchain_semaphore
 
 	swapchainImageIndex: u32
-	vk.AcquireNextImageKHR(
+	e := vk.AcquireNextImageKHR(
 		engine.device.device,
 		engine.swapchain.swapchain,
 		1000000000,
@@ -270,14 +276,34 @@ draw :: proc(engine: ^VulkanEngine) {
 		&swapchainImageIndex,
 	)
 
+	if e == .ERROR_OUT_OF_DATE_KHR {
+		log.infof("Out of data nextimage: %s", e)
+		engine.resize_requested = true
+		return
+	}
+
+	assert(
+		vk.ResetFences(engine.device.device, 1, &get_current_frame(engine).render_fence) ==
+		.SUCCESS,
+	)
+
 	cmd := get_current_frame(engine).main_command_buffer
 
 	vk_assert(vk.ResetCommandBuffer(cmd, {}))
 
 	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
-	engine.draw_extent.width = engine.draw_image.image_extent.width
-	engine.draw_extent.height = engine.draw_image.image_extent.height
+	//engine.draw_extent.width = engine.draw_image.image_extent.width
+	//engine.draw_extent.height = engine.draw_image.image_extent.height
+	engine.draw_extent.height =
+	cast(u32)(cast(f32)(min(
+				engine.swapchain_extent.height,
+				engine.draw_image.image_extent.height,
+			)) *
+		engine.render_scale)
+	engine.draw_extent.width =
+	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.image_extent.width)) *
+		engine.render_scale)
 
 
 	vk_assert(vk.BeginCommandBuffer(cmd, &cmd_begin_info))
@@ -359,7 +385,11 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	presentInfo.pImageIndices = &swapchainImageIndex
 
-	vk_assert(vk.QueuePresentKHR(engine.graphics_queue, &presentInfo))
+	presentResult := vk.QueuePresentKHR(engine.graphics_queue, &presentInfo)
+	if presentResult == .ERROR_OUT_OF_DATE_KHR || presentResult == .SUBOPTIMAL_KHR {
+		log.info("Out of data present")
+		engine.resize_requested = true
+	}
 
 	//increase the number of frames drawn
 	engine.frame_number += 1
@@ -567,7 +597,13 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	//	vkDestroyImageView(_device, _drawImage.imageView, nullptr);
 	//	vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
 
-	return create_swapchain(engine, engine.window_extent.width, engine.window_extent.height)
+	create_swapchain(engine, engine.window_extent.width, engine.window_extent.height) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		destroy_swapchain(engine)
+	})
+
+	return nil
 }
 
 create_swapchain :: proc(engine: ^VulkanEngine, width: u32, height: u32) -> vkb.Error {
@@ -590,10 +626,6 @@ create_swapchain :: proc(engine: ^VulkanEngine, width: u32, height: u32) -> vkb.
 
 	err: vkb.Error
 	engine.swapchain = vkb.swapchain_builder_build(swapchain_builder) or_return
-	append(
-		&engine.deinitFuncs,
-		proc(engine: ^VulkanEngine) {vkb.destroy_swapchain(engine.swapchain)},
-	)
 
 	engine.swapchain_extent = engine.swapchain.extent
 
@@ -601,20 +633,14 @@ create_swapchain :: proc(engine: ^VulkanEngine, width: u32, height: u32) -> vkb.
 
 	engine.swapchain_image_views = vkb.swapchain_get_image_views(engine.swapchain) or_return
 
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		vkb.swapchain_destroy_image_views(engine.swapchain, engine.swapchain_image_views)
-		delete(engine.swapchain_image_views)
-	})
-
 	return nil
 }
 
 destroy_swapchain :: proc(engine: ^VulkanEngine) {
 	vkb.destroy_swapchain(engine.swapchain)
 
-	for image_view in engine.swapchain_image_views {
-		vk.DestroyImageView(engine.device.device, image_view, nil)
-	}
+	vkb.swapchain_destroy_image_views(engine.swapchain, engine.swapchain_image_views)
+	delete(engine.swapchain_image_views)
 }
 
 get_current_frame :: proc(engine: ^VulkanEngine) -> ^FrameData {
@@ -1409,10 +1435,12 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		true,
 	)
 
-	// remove the projection[1][1] *= -1 line
+	view := linalg.matrix4_look_at_f32({0, 0, -5}, {0, 0, 0}, {0, 1, 0})
 
-	view := linalg.transpose(linalg.matrix4_translate_f32({0, 0, -5}))
-	push_constants.worldMatrix = projection * view
+	model := linalg.transpose(linalg.matrix4_scale_f32(1))
+
+	push_constants.worldMatrix = linalg.transpose(projection * view * model) // * model
+	push_constants.worldMatrix[1][1] *= -1
 	push_constants.vertexBuffer = engine.testMeshes[2].meshBuffers.vertexBufferAddress
 
 	vk.CmdPushConstants(
@@ -1622,7 +1650,8 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	//no multisampling
 	pipeline_builder_set_multisampling_none(&pipelineBuilder)
 	//no blending
-	pipeline_builder_disable_blending(&pipelineBuilder)
+	//pipeline_builder_disable_blending(&pipelineBuilder)
+	pipeline_builder_enable_blending_additive(&pipelineBuilder)
 
 	pipeline_builder_enable_depthtest(&pipelineBuilder, true, .GREATER_OR_EQUAL)
 
@@ -1651,4 +1680,26 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	})
 
 	return .SUCCESS
+}
+
+resize_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
+	vkb.vk_check(vk.DeviceWaitIdle(engine.device.device)) or_return
+
+	log.info("Destroying swapchain")
+
+	destroy_swapchain(engine)
+
+	log.info("Destroyed swapchain")
+
+	w, h: c.int
+	sdl2.GetWindowSize(engine.window, &w, &h)
+	engine.window_extent.width = cast(u32)w
+	engine.window_extent.height = cast(u32)h
+
+	log.info("Creating swapchain")
+	create_swapchain(engine, engine.window_extent.width, engine.window_extent.height) or_return
+
+	engine.resize_requested = false
+
+	return nil
 }
