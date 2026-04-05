@@ -120,3 +120,227 @@ descriptor_allocator_allocate :: proc(
 
 	return ds
 }
+
+DescriptorAllocatorGrowable :: struct {
+	ratios:      [dynamic]PoolSizeRatio,
+	fullPools:   [dynamic]vk.DescriptorPool,
+	readyPools:  [dynamic]vk.DescriptorPool,
+	setsPerPool: u32,
+}
+
+descriptor_allocator_growable_init :: proc(
+	self: ^DescriptorAllocatorGrowable,
+	device: vk.Device,
+	maxSets: u32,
+	poolRatios: []PoolSizeRatio,
+) {
+	clear(&self.ratios)
+
+	for r in poolRatios {
+		append(&self.ratios, r)
+	}
+
+	newPool := descriptor_allocator_growable_create_pool(self, device, maxSets, poolRatios)
+
+	self.setsPerPool = cast(u32)(cast(f64)maxSets * 1.5) //grow it next allocation
+
+	append(&self.readyPools, newPool)
+}
+
+descriptor_allocator_growable_clear_pools :: proc(
+	self: ^DescriptorAllocatorGrowable,
+	device: vk.Device,
+) -> vk.Result {
+	for p in self.readyPools {
+		vk.ResetDescriptorPool(device, p, {}) or_return
+	}
+	for p in self.fullPools {
+		vk.ResetDescriptorPool(device, p, {}) or_return
+		append(&self.readyPools, p)
+	}
+	clear(&self.fullPools)
+
+	return .SUCCESS
+}
+
+descriptor_allocator_growable_destroy_pools :: proc(
+	self: ^DescriptorAllocatorGrowable,
+	device: vk.Device,
+) {
+	for p in self.readyPools {
+		vk.DestroyDescriptorPool(device, p, nil)
+	}
+	clear(&self.readyPools)
+	for p in self.fullPools {
+		vk.DestroyDescriptorPool(device, p, nil)
+	}
+	clear(&self.fullPools)
+}
+
+descriptor_allocator_growable_allocate :: proc(
+	self: ^DescriptorAllocatorGrowable,
+	device: vk.Device,
+	layout: vk.DescriptorSetLayout,
+	pNext: rawptr = nil,
+) -> vk.DescriptorSet {
+	poolToUse := descriptor_allocator_growable_get_pool(self, device)
+
+	allocInfo: vk.DescriptorSetAllocateInfo = {}
+	allocInfo.pNext = pNext
+	allocInfo.sType = .DESCRIPTOR_SET_ALLOCATE_INFO
+	allocInfo.descriptorPool = poolToUse
+	allocInfo.descriptorSetCount = 1
+	lLayout := layout
+	allocInfo.pSetLayouts = &lLayout
+
+	ds: vk.DescriptorSet
+	result := vk.AllocateDescriptorSets(device, &allocInfo, &ds)
+
+	//allocation failed. Try again
+	if (result == .ERROR_OUT_OF_POOL_MEMORY || result == .ERROR_FRAGMENTED_POOL) {
+
+		append(&self.fullPools, poolToUse)
+
+		poolToUse = descriptor_allocator_growable_get_pool(self, device)
+		allocInfo.descriptorPool = poolToUse
+
+		assert(vk.AllocateDescriptorSets(device, &allocInfo, &ds) == .SUCCESS)
+	}
+
+	append(&self.readyPools, poolToUse)
+	return ds
+}
+
+@(private)
+descriptor_allocator_growable_get_pool :: proc(
+	self: ^DescriptorAllocatorGrowable,
+	device: vk.Device,
+) -> vk.DescriptorPool {
+	newPool: vk.DescriptorPool
+	if (len(self.readyPools) != 0) {
+		newPool = pop(&self.readyPools)
+	} else {
+		//need to create a new pool
+		newPool = descriptor_allocator_growable_create_pool(
+			self,
+			device,
+			self.setsPerPool,
+			self.ratios[:],
+		)
+
+		self.setsPerPool = cast(u32)(cast(f32)self.setsPerPool * 1.5)
+		if (self.setsPerPool > 4092) {
+			self.setsPerPool = 4092
+		}
+	}
+
+	return newPool
+}
+
+@(private)
+descriptor_allocator_growable_create_pool :: proc(
+	self: ^DescriptorAllocatorGrowable,
+	device: vk.Device,
+	setCount: u32,
+	poolRatios: []PoolSizeRatio,
+) -> vk.DescriptorPool {
+	poolSizes: [dynamic]vk.DescriptorPoolSize
+	for ratio in poolRatios {
+		append(
+			&poolSizes,
+			vk.DescriptorPoolSize {
+				type = ratio.type,
+				descriptorCount = cast(u32)(ratio.ratio * cast(f32)setCount),
+			},
+		)
+	}
+
+	pool_info: vk.DescriptorPoolCreateInfo = {}
+	pool_info.sType = .DESCRIPTOR_POOL_CREATE_INFO
+	pool_info.flags = {}
+	pool_info.maxSets = setCount
+	pool_info.poolSizeCount = cast(u32)len(poolSizes)
+	pool_info.pPoolSizes = raw_data(poolSizes)
+
+	newPool: vk.DescriptorPool
+	vk.CreateDescriptorPool(device, &pool_info, nil, &newPool)
+	return newPool
+}
+
+DescriptorWriter :: struct {
+	imageInfos:  [dynamic]vk.DescriptorImageInfo, // std::deque
+	bufferInfos: [dynamic]vk.DescriptorBufferInfo, // std::deque
+	writes:      [dynamic]vk.WriteDescriptorSet,
+}
+
+descriptor_writer_write_image :: proc(
+	dw: ^DescriptorWriter,
+	binding: u32,
+	image: vk.ImageView,
+	sampler: vk.Sampler,
+	layout: vk.ImageLayout,
+	type: vk.DescriptorType,
+) {
+	i, _ := append(
+		&dw.imageInfos,
+		vk.DescriptorImageInfo{sampler = sampler, imageView = image, imageLayout = layout},
+	)
+	info := &dw.imageInfos[i - 1]
+
+	write: vk.WriteDescriptorSet = {
+		sType = .WRITE_DESCRIPTOR_SET,
+	}
+
+	write.dstBinding = binding
+	write.dstSet = 0 //left empty for now until we need to write it
+	write.descriptorCount = 1
+	write.descriptorType = type
+	write.pImageInfo = info
+
+	append(&dw.writes, write)
+}
+
+descriptor_writer_write_buffer :: proc(
+	dw: ^DescriptorWriter,
+	binding: u32,
+	buffer: vk.Buffer,
+	size: vk.DeviceSize,
+	offset: vk.DeviceSize,
+	type: vk.DescriptorType,
+) {
+	i, _ := append(
+		&dw.bufferInfos,
+		vk.DescriptorBufferInfo{buffer = buffer, offset = offset, range = size},
+	)
+	info := &dw.bufferInfos[i - 1]
+
+	write: vk.WriteDescriptorSet = {
+		sType = .WRITE_DESCRIPTOR_SET,
+	}
+
+	write.dstBinding = binding
+	write.dstSet = 0 //left empty for now until we need to write it
+	write.descriptorCount = 1
+	write.descriptorType = type
+	write.pBufferInfo = info
+
+	append(&dw.writes, write)
+}
+
+descriptor_writer_clear :: proc(dw: ^DescriptorWriter) {
+	clear(&dw.imageInfos)
+	clear(&dw.writes)
+	clear(&dw.bufferInfos)
+}
+descriptor_writer_update_set :: proc(
+	dw: ^DescriptorWriter,
+	device: vk.Device,
+	set: vk.DescriptorSet,
+) {
+
+	for &write in dw.writes {
+		write.dstSet = set
+	}
+
+	vk.UpdateDescriptorSets(device, cast(u32)len(dw.writes), raw_data(dw.writes), 0, nil)
+}

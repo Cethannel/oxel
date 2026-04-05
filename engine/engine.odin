@@ -22,12 +22,28 @@ import imgui_sdl2 "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_sdl2"
 import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
 
 DeinitFunc :: proc(engine: ^VulkanEngine)
+FrameDeinitFunc :: proc(engine: ^VulkanEngine, frame_data: ^FrameData)
+
+GPUSceneData :: struct {
+	view:              matrix[4, 4]f32,
+	proj:              matrix[4, 4]f32,
+	viewproj:          matrix[4, 4]f32,
+	ambientColor:      [4]f32,
+	sunlightDirection: [4]f32, // w for sun power
+	sunlightColor:     [4]f32,
+}
 
 FrameData :: struct {
+	swapchain_semaphore: vk.Semaphore,
+	render_semaphore:    vk.Semaphore,
+	render_fence:        vk.Fence,
 	command_pool:        vk.CommandPool,
 	main_command_buffer: vk.CommandBuffer,
-	swapchain_semaphore: vk.Semaphore,
-	render_fence:        vk.Fence,
+	frame_descriptors:   DescriptorAllocatorGrowable,
+	deletion_queue:      [dynamic]FrameDeinitFunc,
+
+	// TODO: remove me
+	gpu_scene_data:      AllocatedBuffer,
 }
 
 AllocateImage :: struct {
@@ -59,6 +75,14 @@ Vertex :: struct {
 	color:    [4]f32,
 }
 
+AllocatedImage :: struct {
+	image:       vk.Image,
+	imageView:   vk.ImageView,
+	allocation:  vma.Allocation,
+	imageExtent: vk.Extent3D,
+	imageFormat: vk.Format,
+}
+
 // holds the resources needed for a mesh
 GPUMeshBuffers :: struct {
 	indexBuffer:         AllocatedBuffer,
@@ -75,51 +99,63 @@ GPUDrawPushConstants :: struct {
 FRAME_OVERLAP :: 2
 
 VulkanEngine :: struct {
-	deinitFuncs:                  [dynamic]DeinitFunc,
-	frame_number:                 int,
-	stop_rendering:               bool,
-	window_extent:                vk.Extent2D,
-	window:                       ^sdl2.Window,
-	instance:                     ^vkb.Instance,
-	device:                       ^vkb.Device,
-	surface:                      vk.SurfaceKHR,
-	is_initialized:               bool,
-	swapchain:                    ^vkb.Swapchain,
-	swapchain_images:             []vk.Image,
-	render_semaphores:            []vk.Semaphore,
-	swapchain_image_views:        []vk.ImageView,
-	swapchain_extent:             vk.Extent2D,
-	frames:                       [FRAME_OVERLAP]FrameData,
-	graphics_queue:               vk.Queue,
-	graphics_queue_family:        u32,
-	allocator:                    vma.Allocator,
-	draw_image:                   AllocateImage,
-	depth_image:                  AllocateImage,
-	draw_extent:                  vk.Extent2D,
-	render_scale:                 f32,
-	resize_requested:             bool,
+	deinitFuncs:                      [dynamic]DeinitFunc,
+	frame_number:                     int,
+	stop_rendering:                   bool,
+	window_extent:                    vk.Extent2D,
+	window:                           ^sdl2.Window,
+	instance:                         ^vkb.Instance,
+	device:                           ^vkb.Device,
+	surface:                          vk.SurfaceKHR,
+	is_initialized:                   bool,
+	swapchain:                        ^vkb.Swapchain,
+	swapchain_images:                 []vk.Image,
+	render_semaphores:                []vk.Semaphore,
+	swapchain_image_views:            []vk.ImageView,
+	swapchain_extent:                 vk.Extent2D,
+	frames:                           [FRAME_OVERLAP]FrameData,
+	graphics_queue:                   vk.Queue,
+	graphics_queue_family:            u32,
+	allocator:                        vma.Allocator,
+	draw_image:                       AllocateImage,
+	depth_image:                      AllocateImage,
+	draw_extent:                      vk.Extent2D,
+	render_scale:                     f32,
+	resize_requested:                 bool,
 	//
-	global_descriptor_allocator:  DescriptorAllocator,
-	draw_image_descriptors:       vk.DescriptorSet,
-	draw_image_descriptor_layout: vk.DescriptorSetLayout,
+	global_descriptor_allocator:      DescriptorAllocator,
+	draw_image_descriptors:           vk.DescriptorSet,
+	draw_image_descriptor_layout:     vk.DescriptorSetLayout,
 	//
-	gradient_pipeline_layout:     vk.PipelineLayout,
+	scene_data:                       GPUSceneData,
+	gpu_scene_data_descriptor_layout: vk.DescriptorSetLayout,
+	//
+	gradient_pipeline_layout:         vk.PipelineLayout,
 	// Imgui
-	imm_fence:                    vk.Fence,
-	imm_command_buffer:           vk.CommandBuffer,
-	imm_command_pool:             vk.CommandPool,
-	imgui_pool:                   vk.DescriptorPool,
+	imm_fence:                        vk.Fence,
+	imm_command_buffer:               vk.CommandBuffer,
+	imm_command_pool:                 vk.CommandPool,
+	imgui_pool:                       vk.DescriptorPool,
 
 	//
-	backgroundEffects:            [dynamic]ComputeEffect,
-	currentBackgroundEffect:      int,
+	backgroundEffects:                [dynamic]ComputeEffect,
+	currentBackgroundEffect:          int,
 
 	//
-	meshPipelineLayout:           vk.PipelineLayout,
-	meshPipeline:                 vk.Pipeline,
+	meshPipelineLayout:               vk.PipelineLayout,
+	meshPipeline:                     vk.Pipeline,
 
 	// :gltf test
-	testMeshes:                   [dynamic]MeshAsset,
+	testMeshes:                       [dynamic]MeshAsset,
+
+	// :images
+	white_image:                      AllocatedImage,
+	black_image:                      AllocatedImage,
+	grey_image:                       AllocatedImage,
+	error_checkerboard_image:         AllocatedImage,
+	default_sampler_linear:           vk.Sampler,
+	default_sampler_nearest:          vk.Sampler,
+	single_image_descriptor_layout:   vk.DescriptorSetLayout,
 }
 
 ComputePushConstants :: struct {
@@ -263,6 +299,17 @@ draw :: proc(engine: ^VulkanEngine) {
 	assert(get_current_frame(engine) != nil)
 	assert(engine.device != nil)
 	assert(engine.swapchain != nil)
+
+	descriptor_allocator_growable_clear_pools(
+		&get_current_frame(engine).frame_descriptors,
+		engine.device.device,
+	)
+
+	cur_frame := get_current_frame(engine)
+	#reverse for func in cur_frame.deletion_queue {
+		func(engine, cur_frame)
+	}
+	clear(&cur_frame.deletion_queue)
 
 	swap_semaphore := get_current_frame(engine).swapchain_semaphore
 
@@ -1085,22 +1132,17 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		engine.draw_image_descriptor_layout,
 	)
 
-	img_info := vk.DescriptorImageInfo{}
-	img_info.imageLayout = .GENERAL
-	img_info.imageView = engine.draw_image.image_view
+	writer: DescriptorWriter
+	descriptor_writer_write_image(
+		&writer,
+		0,
+		engine.draw_image.image_view,
+		0,
+		.GENERAL,
+		.STORAGE_IMAGE,
+	)
 
-	draw_image_write := vk.WriteDescriptorSet {
-		sType = .WRITE_DESCRIPTOR_SET,
-		pNext = nil,
-	}
-
-	draw_image_write.dstBinding = 0
-	draw_image_write.dstSet = engine.draw_image_descriptors
-	draw_image_write.descriptorCount = 1
-	draw_image_write.descriptorType = .STORAGE_IMAGE
-	draw_image_write.pImageInfo = &img_info
-
-	vk.UpdateDescriptorSets(engine.device.device, 1, &draw_image_write, 0, nil)
+	descriptor_writer_update_set(&writer, engine.device.device, engine.draw_image_descriptors)
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		descriptor_allocator_destroy_pool(
@@ -1113,6 +1155,68 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 			nil,
 		)
 	})
+
+	for i := 0; i < FRAME_OVERLAP; i += 1 {
+		frame_sizes := [?]PoolSizeRatio { 	// std::vector<DescriptorAllocatorGrowable::PoolSizeRatio>
+			{type = .STORAGE_IMAGE, ratio = 3},
+			{type = .STORAGE_BUFFER, ratio = 3},
+			{type = .UNIFORM_BUFFER, ratio = 3},
+			{type = .COMBINED_IMAGE_SAMPLER, ratio = 4},
+		}
+
+		engine.frames[i].frame_descriptors = DescriptorAllocatorGrowable{}
+		descriptor_allocator_growable_init(
+			&engine.frames[i].frame_descriptors,
+			engine.device.device,
+			1000,
+			frame_sizes[:],
+		)
+
+		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+			for i := 0; i < FRAME_OVERLAP; i += 1 {
+				descriptor_allocator_growable_destroy_pools(
+					&engine.frames[i].frame_descriptors,
+					engine.device.device,
+				)
+			}
+		})
+	}
+
+	{
+		builder: DescriptorLayoutBuilder
+		descriptor_builder_add_binding(&builder, 0, .UNIFORM_BUFFER)
+		engine.gpu_scene_data_descriptor_layout = descriptor_builder_build(
+			&builder,
+			engine.device.device,
+			{.VERTEX, .FRAGMENT},
+		) or_return
+
+		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+			vk.DestroyDescriptorSetLayout(
+				engine.device.device,
+				engine.gpu_scene_data_descriptor_layout,
+				nil,
+			)
+		})
+	}
+
+	{
+		builder: DescriptorLayoutBuilder
+		descriptor_builder_add_binding(&builder, 0, .COMBINED_IMAGE_SAMPLER)
+		engine.single_image_descriptor_layout = descriptor_builder_build(
+			&builder,
+			engine.device.device,
+			{.FRAGMENT},
+		) or_return
+
+		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+			vk.DestroyDescriptorSetLayout(
+				engine.device.device,
+				engine.single_image_descriptor_layout,
+				nil,
+			)
+		})
+	}
 
 	return nil
 }
@@ -1405,6 +1509,27 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	vk.CmdBindPipeline(cmd, .GRAPHICS, engine.meshPipeline)
 
+	imageSet := descriptor_allocator_growable_allocate(
+		&get_current_frame(engine).frame_descriptors,
+		engine.device.device,
+		engine.single_image_descriptor_layout,
+	)
+	{
+		writer: DescriptorWriter
+		descriptor_writer_write_image(
+			&writer,
+			0,
+			engine.error_checkerboard_image.imageView,
+			engine.default_sampler_nearest,
+			.SHADER_READ_ONLY_OPTIMAL,
+			.COMBINED_IMAGE_SAMPLER,
+		)
+
+		descriptor_writer_update_set(&writer, engine.device.device, imageSet)
+	}
+
+	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, engine.meshPipelineLayout, 0, 1, &imageSet, 0, nil)
+
 	viewport: vk.Viewport = {}
 	viewport.x = 0
 	viewport.y = 0
@@ -1462,6 +1587,53 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		0,
 		0,
 	)
+
+	if true {
+		return
+	}
+
+	frame_data := get_current_frame(engine)
+
+	//allocate a new uniform buffer for the scene data
+	err: vk.Result
+	frame_data.gpu_scene_data, err = create_buffer(
+		engine,
+		size_of(GPUSceneData),
+		{.UNIFORM_BUFFER},
+		.Cpu_To_Gpu,
+	)
+
+	vk_assert(err)
+
+	//add it to the deletion queue of this frame so it gets deleted once its been used
+	append(
+		&get_current_frame(engine).deletion_queue,
+		proc(engine: ^VulkanEngine, frame_data: ^FrameData) {
+			destroy_buffer(engine, frame_data.gpu_scene_data)
+		},
+	)
+
+	//write the buffer
+	sceneUniformData := cast(^GPUSceneData)frame_data.gpu_scene_data.info.mapped_data
+	sceneUniformData^ = engine.scene_data
+
+	//create a descriptor set that binds that buffer and update it
+	globalDescriptor := descriptor_allocator_growable_allocate(
+		&frame_data.frame_descriptors,
+		engine.device.device,
+		engine.gpu_scene_data_descriptor_layout,
+	)
+
+	writer: DescriptorWriter
+	descriptor_writer_write_buffer(
+		&writer,
+		0,
+		frame_data.gpu_scene_data.buffer,
+		size_of(GPUSceneData),
+		0,
+		.UNIFORM_BUFFER,
+	)
+	descriptor_writer_update_set(&writer, engine.device.device, globalDescriptor)
 }
 
 create_buffer :: proc(
@@ -1593,7 +1765,7 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	err: LoadShaderError = nil
 	triangleFragShader: vk.ShaderModule
 	triangleFragShader, err = load_shader_module(
-		"shaders/color_triangle.frag.spv",
+		"shaders/tex_image.frag.spv",
 		engine.device.device,
 	)
 	if err == nil {
@@ -1623,6 +1795,8 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	pipeline_layout_info: vk.PipelineLayoutCreateInfo = pipeline_layout_create_info()
 	pipeline_layout_info.pPushConstantRanges = &bufferRange
 	pipeline_layout_info.pushConstantRangeCount = 1
+	pipeline_layout_info.pSetLayouts = &engine.single_image_descriptor_layout
+	pipeline_layout_info.setLayoutCount = 1
 
 	vk.CreatePipelineLayout(
 		engine.device.device,
@@ -1651,7 +1825,8 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	pipeline_builder_set_multisampling_none(&pipelineBuilder)
 	//no blending
 	//pipeline_builder_disable_blending(&pipelineBuilder)
-	pipeline_builder_enable_blending_additive(&pipelineBuilder)
+	//pipeline_builder_enable_blending_additive(&pipelineBuilder)
+	pipeline_builder_enable_blending_alphablend(&pipelineBuilder)
 
 	pipeline_builder_enable_depthtest(&pipelineBuilder, true, .GREATER_OR_EQUAL)
 
@@ -1679,6 +1854,74 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		}
 	})
 
+
+	//3 default textures, white, grey, black. 1 pixel each
+	white := pack_unorm4x8({1, 1, 1, 1})
+	engine.white_image = create_image_with_data(
+		engine,
+		&white,
+		vk.Extent3D{1, 1, 1},
+		.R8G8B8A8_UNORM,
+		{.SAMPLED},
+	) or_return
+
+	grey := pack_unorm4x8({0.66, 0.66, 0.66, 1})
+	engine.grey_image = create_image_with_data(
+		engine,
+		&grey,
+		vk.Extent3D{1, 1, 1},
+		.R8G8B8A8_UNORM,
+		{.SAMPLED},
+	) or_return
+
+	black := cast(u32)Color{r = 0, g = 0, b = 0, a = 255}
+	engine.black_image = create_image_with_data(
+		engine,
+		&black,
+		vk.Extent3D{1, 1, 1},
+		.R8G8B8A8_UNORM,
+		{.SAMPLED},
+	) or_return
+
+	//checkerboard image
+	magenta := cast(u32)Color{r = 255, g = 0, b = 255, a = 255}
+	pixels: [16 * 16]u32 //for 16x16 checkerboard texture
+	for x in 0 ..< 16 {
+		for y in 0 ..< 16 {
+			pixels[y * 16 + x] = ((x % 2) ~ (y % 2)) != 0 ? magenta : black
+		}
+	}
+	engine.error_checkerboard_image = create_image_with_data(
+		engine,
+		raw_data(pixels[:]),
+		vk.Extent3D{16, 16, 1},
+		.R8G8B8A8_UNORM,
+		{.SAMPLED},
+	) or_return
+
+	sampl: vk.SamplerCreateInfo = {
+		sType = .SAMPLER_CREATE_INFO,
+	}
+
+	sampl.magFilter = .NEAREST
+	sampl.minFilter = .NEAREST
+
+	vk.CreateSampler(engine.device.device, &sampl, nil, &engine.default_sampler_nearest)
+
+	sampl.magFilter = .LINEAR
+	sampl.minFilter = .LINEAR
+	vk.CreateSampler(engine.device.device, &sampl, nil, &engine.default_sampler_linear)
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		vk.DestroySampler(engine.device.device, engine.default_sampler_nearest, nil)
+		vk.DestroySampler(engine.device.device, engine.default_sampler_linear, nil)
+
+		destroy_image(engine, &engine.white_image)
+		destroy_image(engine, &engine.grey_image)
+		destroy_image(engine, &engine.black_image)
+		destroy_image(engine, &engine.error_checkerboard_image)
+	})
+
 	return .SUCCESS
 }
 
@@ -1702,4 +1945,131 @@ resize_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	engine.resize_requested = false
 
 	return nil
+}
+
+create_image :: proc(
+	engine: ^VulkanEngine,
+	size: vk.Extent3D,
+	format: vk.Format,
+	usage: vk.ImageUsageFlags,
+	mipmapped: bool = false,
+) -> (
+	img: AllocatedImage,
+	err: vk.Result,
+) {
+	newImage: AllocatedImage
+	newImage.imageFormat = format
+	newImage.imageExtent = size
+
+	img_info := image_create_info(format, usage, size)
+	if (mipmapped) {
+		img_info.mipLevels =
+			cast(u32)(math.floor(math.log2_f32(cast(f32)max(size.width, size.height)))) + 1
+	}
+
+	allocinfo: vma.Allocation_Create_Info = {}
+	allocinfo.usage = .Gpu_Only
+	allocinfo.required_flags = vk.MemoryPropertyFlags{.DEVICE_LOCAL}
+
+	vma.create_image(
+		engine.allocator,
+		img_info,
+		allocinfo,
+		&newImage.image,
+		&newImage.allocation,
+		nil,
+	) or_return
+
+	aspectFlag: vk.ImageAspectFlags = {.COLOR}
+	if (format == .D32_SFLOAT) {
+		aspectFlag = {.DEPTH}
+	}
+
+	view_info := imageview_create_info(format, newImage.image, aspectFlag)
+	view_info.subresourceRange.levelCount = img_info.mipLevels
+
+	vk.CreateImageView(engine.device.device, &view_info, nil, &newImage.imageView) or_return
+
+	return newImage, nil
+}
+
+create_image_with_data :: proc(
+	engine: ^VulkanEngine,
+	data: rawptr,
+	size: vk.Extent3D,
+	format: vk.Format,
+	usage: vk.ImageUsageFlags,
+	mipmapped: bool = false,
+) -> (
+	image: AllocatedImage,
+	err: vk.Result,
+) {
+	data_size := cast(vk.DeviceSize)(size.depth * size.width * size.height * 4)
+	uploadbuffer := create_buffer(engine, data_size, {.TRANSFER_SRC}, .Cpu_To_Gpu) or_return
+	defer destroy_buffer(engine, uploadbuffer)
+
+	mem.copy(uploadbuffer.info.mapped_data, data, cast(int)data_size)
+
+	new_image := create_image(
+		engine,
+		size,
+		format,
+		usage | {.TRANSFER_DST, .TRANSFER_SRC},
+		mipmapped,
+	) or_return
+
+	cmd := immediate_start(engine) or_return
+	{
+		transition_image(cmd, new_image.image, .UNDEFINED, .TRANSFER_DST_OPTIMAL)
+
+		copyRegion: vk.BufferImageCopy = {}
+		copyRegion.bufferOffset = 0
+		copyRegion.bufferRowLength = 0
+		copyRegion.bufferImageHeight = 0
+
+		copyRegion.imageSubresource.aspectMask = {.COLOR}
+		copyRegion.imageSubresource.mipLevel = 0
+		copyRegion.imageSubresource.baseArrayLayer = 0
+		copyRegion.imageSubresource.layerCount = 1
+		copyRegion.imageExtent = size
+
+		// copy the buffer into the image
+		vk.CmdCopyBufferToImage(
+			cmd,
+			uploadbuffer.buffer,
+			new_image.image,
+			.TRANSFER_DST_OPTIMAL,
+			1,
+			&copyRegion,
+		)
+
+		transition_image(cmd, new_image.image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL)
+	}
+	immediate_submit(engine, cmd) or_return
+
+	return new_image, nil
+}
+
+destroy_image :: proc(engine: ^VulkanEngine, img: ^AllocatedImage) {
+	vk.DestroyImageView(engine.device.device, img.imageView, nil)
+	vma.destroy_image(engine.allocator, img.image, img.allocation)
+}
+
+// Equivalent to glm::pack_unorm4x8
+pack_unorm4x8 :: proc "contextless" (v: [4]f32) -> u32 {
+	// Clamp/saturate to [0, 1] and scale to [0, 255]
+	r := u32(math.round(clamp(v[0], 0.0, 1.0) * 255.0))
+	g := u32(math.round(clamp(v[1], 0.0, 1.0) * 255.0))
+	b := u32(math.round(clamp(v[2], 0.0, 1.0) * 255.0))
+	a := u32(math.round(clamp(v[3], 0.0, 1.0) * 255.0))
+
+	// Pack as RGBA (little-endian byte order, common for textures)
+	return r | (g << 8) | (b << 16) | (a << 24)
+}
+
+Color :: bit_field u32 {
+	r: u8 | 8,
+	g: u8 | 8,
+	b: u8 | 8,
+	a: u8 | 8,
 }
