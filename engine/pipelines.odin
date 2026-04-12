@@ -12,6 +12,7 @@ PipelineBuilder :: struct {
 	depthStencil:          vk.PipelineDepthStencilStateCreateInfo,
 	renderInfo:            vk.PipelineRenderingCreateInfo,
 	colorAttachmentformat: vk.Format,
+	initialized:           bool,
 }
 
 pipeline_builder_clear :: proc(pb: ^PipelineBuilder) {
@@ -40,6 +41,8 @@ pipeline_builder_clear :: proc(pb: ^PipelineBuilder) {
 	}
 
 	clear_dynamic_array(&pb.shaderStages)
+
+	pb.initialized = true
 }
 
 pipeline_builder_build :: proc(
@@ -49,6 +52,7 @@ pipeline_builder_build :: proc(
 	pipeline: vk.Pipeline,
 	err: vk.Result,
 ) {
+	assert(pb.initialized, "Pipeline builder not initialized")
 	viewportState: vk.PipelineViewportStateCreateInfo = {}
 	viewportState.sType = .PIPELINE_VIEWPORT_STATE_CREATE_INFO
 	viewportState.pNext = nil

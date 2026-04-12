@@ -3,6 +3,9 @@ package engine
 import vkb "../vkbootstrap/"
 import vma "../vma/"
 import "core:fmt"
+import "core:log"
+import "core:math"
+import "core:math/linalg"
 import "core:os"
 import vk "vendor:vulkan"
 
@@ -20,6 +23,8 @@ load_shader_module :: proc(
 	shader_module: vk.ShaderModule,
 	err: LoadShaderError,
 ) {
+	log.info("Loading shader: %s", filePath)
+
 	file: os.Handle
 	file, err = os.open(filePath)
 	if err != nil {
@@ -83,4 +88,54 @@ pipeline_layout_create_info :: proc() -> vk.PipelineLayoutCreateInfo {
 	info.pushConstantRangeCount = 0
 	info.pPushConstantRanges = nil
 	return info
+}
+
+
+matrix4_perspective_reverse_z_f32 :: proc "contextless" (
+	fovy, aspect, near: f32,
+	flip_y_axis := true,
+) -> (
+	m: linalg.Matrix4f32,
+) #no_bounds_check {
+	epsilon :: 0.00000095367431640625 // 2^-20 or about 10^-6
+	fov_scale := 1 / math.tan(fovy * 0.5)
+
+	m[0, 0] = fov_scale / aspect
+	m[1, 1] = fov_scale
+
+	// Set up reverse-Z configuration
+	m[2, 2] = epsilon
+	m[2, 3] = near * (1 - epsilon)
+	m[3, 2] = -1
+
+	// Handle Vulkan Y-flip if needed
+	if flip_y_axis {
+		m[1, 1] = -m[1, 1]
+	}
+
+	return
+}
+// Correct infinite-far reverse-Z perspective matrix for Vulkan
+matrix4_perspective_reverse_z_infinite_f32 :: proc(
+	fovy, aspect, near: f32,
+	flip_y := true,
+) -> linalg.Matrix4f32 {
+	f := 1.0 / math.tan(fovy * 0.5)
+
+	m: linalg.Matrix4f32 = linalg.MATRIX4F32_IDENTITY
+
+	m[0, 0] = f / aspect // X scale
+	m[1, 1] = f // Y scale (will be negated below if flip_y)
+
+	// Reverse-Z + infinite far:
+	m[2, 2] = 0.0
+	m[2, 3] = near // important
+	m[3, 2] = -1.0
+	m[3, 3] = 0.0
+
+	if flip_y {
+		m[1, 1] = -m[1, 1] // Vulkan Y-down flip (this is the most common fix for stretching)
+	}
+
+	return m
 }

@@ -123,7 +123,7 @@ VulkanEngine :: struct {
 	render_scale:                     f32,
 	resize_requested:                 bool,
 	//
-	global_descriptor_allocator:      DescriptorAllocator,
+	global_descriptor_allocator:      DescriptorAllocatorGrowable,
 	draw_image_descriptors:           vk.DescriptorSet,
 	draw_image_descriptor_layout:     vk.DescriptorSetLayout,
 	//
@@ -156,6 +156,9 @@ VulkanEngine :: struct {
 	default_sampler_linear:           vk.Sampler,
 	default_sampler_nearest:          vk.Sampler,
 	single_image_descriptor_layout:   vk.DescriptorSetLayout,
+
+	//
+	camera_pos:                       [3]f32,
 }
 
 ComputePushConstants :: struct {
@@ -255,26 +258,34 @@ run :: proc(engine: ^VulkanEngine) {
 		imgui_sdl2.NewFrame()
 		imgui.NewFrame()
 
-		if imgui.Begin("background") {
+		{
 			defer imgui.End()
+			if imgui.Begin("background") {
+				imgui.SliderFloat("Render Scale", &engine.render_scale, 0.3, 1.)
 
-			imgui.SliderFloat("Render Scale", &engine.render_scale, 0.3, 1.)
+				selected := &engine.backgroundEffects[engine.currentBackgroundEffect]
 
-			selected := &engine.backgroundEffects[engine.currentBackgroundEffect]
+				imgui.Text("Selected effect: %s", selected.name)
 
-			imgui.Text("Selected effect: %s", selected.name)
+				imgui.SliderInt(
+					"Effect index",
+					cast(^c.int)&engine.currentBackgroundEffect,
+					0,
+					cast(c.int)len(engine.backgroundEffects) - 1,
+				)
 
-			imgui.SliderInt(
-				"Effect index",
-				cast(^c.int)&engine.currentBackgroundEffect,
-				0,
-				cast(c.int)len(engine.backgroundEffects) - 1,
-			)
+				imgui.InputFloat4("data1", &selected.data.data1)
+				imgui.InputFloat4("data2", &selected.data.data2)
+				imgui.InputFloat4("data3", &selected.data.data3)
+				imgui.InputFloat4("data4", &selected.data.data4)
+			}
+		}
 
-			imgui.InputFloat4("data1", &selected.data.data1)
-			imgui.InputFloat4("data2", &selected.data.data2)
-			imgui.InputFloat4("data3", &selected.data.data3)
-			imgui.InputFloat4("data4", &selected.data.data4)
+		{
+			defer imgui.End()
+			if imgui.Begin("camera") {
+				imgui.InputFloat3("Position", &engine.camera_pos)
+			}
 		}
 
 		imgui.ShowDemoWindow()
@@ -1107,9 +1118,13 @@ draw_background :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 }
 
 init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
-	sizes := [?]PoolSizeRatio{PoolSizeRatio{type = .STORAGE_IMAGE, ratio = 1.0}}
+	sizes := [?]PoolSizeRatio {
+		PoolSizeRatio{type = .STORAGE_IMAGE, ratio = 1.0},
+		PoolSizeRatio{type = .UNIFORM_BUFFER, ratio = 1},
+		PoolSizeRatio{type = .COMBINED_IMAGE_SAMPLER, ratio = 4},
+	}
 
-	descriptor_allocator_init_pool(
+	descriptor_allocator_growable_init(
 		&engine.global_descriptor_allocator,
 		engine.device.device,
 		10,
@@ -1125,33 +1140,64 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 			{.COMPUTE},
 		) or_return
 	}
+	{
+		builder: DescriptorLayoutBuilder
+		descriptor_builder_add_binding(&builder, 0, .UNIFORM_BUFFER)
+		engine.gpu_scene_data_descriptor_layout = descriptor_builder_build(
+			&builder,
+			engine.device.device,
+			{.VERTEX, .FRAGMENT},
+		) or_return
+	}
 
-	engine.draw_image_descriptors = descriptor_allocator_allocate(
+	{
+		builder: DescriptorLayoutBuilder
+		descriptor_builder_add_binding(&builder, 0, .COMBINED_IMAGE_SAMPLER)
+		engine.single_image_descriptor_layout = descriptor_builder_build(
+			&builder,
+			engine.device.device,
+			{.FRAGMENT},
+		) or_return
+	}
+
+	engine.draw_image_descriptors = descriptor_allocator_growable_allocate(
 		&engine.global_descriptor_allocator,
 		engine.device.device,
 		engine.draw_image_descriptor_layout,
 	)
 
-	writer: DescriptorWriter
-	descriptor_writer_write_image(
-		&writer,
-		0,
-		engine.draw_image.image_view,
-		0,
-		.GENERAL,
-		.STORAGE_IMAGE,
-	)
+	{
+		writer: DescriptorWriter
+		descriptor_writer_write_image(
+			&writer,
+			0,
+			engine.draw_image.image_view,
+			0,
+			.GENERAL,
+			.STORAGE_IMAGE,
+		)
 
-	descriptor_writer_update_set(&writer, engine.device.device, engine.draw_image_descriptors)
+		descriptor_writer_update_set(&writer, engine.device.device, engine.draw_image_descriptors)
+	}
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		descriptor_allocator_destroy_pool(
+		descriptor_allocator_growable_destroy_pools(
 			&engine.global_descriptor_allocator,
 			engine.device.device,
 		)
 		vk.DestroyDescriptorSetLayout(
 			engine.device.device,
 			engine.draw_image_descriptor_layout,
+			nil,
+		)
+		vk.DestroyDescriptorSetLayout(
+			engine.device.device,
+			engine.gpu_scene_data_descriptor_layout,
+			nil,
+		)
+		vk.DestroyDescriptorSetLayout(
+			engine.device.device,
+			engine.single_image_descriptor_layout,
 			nil,
 		)
 	})
@@ -1171,52 +1217,16 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 			1000,
 			frame_sizes[:],
 		)
-
-		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-			for i := 0; i < FRAME_OVERLAP; i += 1 {
-				descriptor_allocator_growable_destroy_pools(
-					&engine.frames[i].frame_descriptors,
-					engine.device.device,
-				)
-			}
-		})
 	}
 
-	{
-		builder: DescriptorLayoutBuilder
-		descriptor_builder_add_binding(&builder, 0, .UNIFORM_BUFFER)
-		engine.gpu_scene_data_descriptor_layout = descriptor_builder_build(
-			&builder,
-			engine.device.device,
-			{.VERTEX, .FRAGMENT},
-		) or_return
-
-		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-			vk.DestroyDescriptorSetLayout(
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		for i := 0; i < FRAME_OVERLAP; i += 1 {
+			descriptor_allocator_growable_destroy_pools(
+				&engine.frames[i].frame_descriptors,
 				engine.device.device,
-				engine.gpu_scene_data_descriptor_layout,
-				nil,
 			)
-		})
-	}
-
-	{
-		builder: DescriptorLayoutBuilder
-		descriptor_builder_add_binding(&builder, 0, .COMBINED_IMAGE_SAMPLER)
-		engine.single_image_descriptor_layout = descriptor_builder_build(
-			&builder,
-			engine.device.device,
-			{.FRAGMENT},
-		) or_return
-
-		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-			vk.DestroyDescriptorSetLayout(
-				engine.device.device,
-				engine.single_image_descriptor_layout,
-				nil,
-			)
-		})
-	}
+		}
+	})
 
 	return nil
 }
@@ -1548,46 +1558,57 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	vk.CmdSetScissor(cmd, 0, 1, &scissor)
 
-
 	push_constants: GPUDrawPushConstants
 	push_constants.worldMatrix = 1.
 
-	projection := linalg.matrix4_perspective(
-		math.to_radians_f32(70.),
-		f32(engine.draw_extent.width) / f32(engine.draw_extent.height),
-		10000., // near
-		0.1, // far
-		true,
-	)
+	fov := math.to_radians_f32(70.0)
+	aspect := f32(engine.draw_extent.width) / f32(engine.draw_extent.height)
+	near: f32 = 0.01
 
-	view := linalg.matrix4_look_at_f32({0, 0, -5}, {0, 0, 0}, {0, 1, 0})
+	for selectedMesh in 0 ..< len(engine.testMeshes) {
+		projection := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
 
-	model := linalg.transpose(linalg.matrix4_scale_f32(1))
+		view := linalg.matrix4_look_at_f32(
+		engine.camera_pos, // eye
+		{0, 0, 0}, // center (or a look target)
+		{0, 1, 0}, // up
+		)
 
-	push_constants.worldMatrix = linalg.transpose(projection * view * model) // * model
-	push_constants.worldMatrix[1][1] *= -1
-	push_constants.vertexBuffer = engine.testMeshes[2].meshBuffers.vertexBufferAddress
+		model := linalg.matrix4_translate_f32({cast(f32)selectedMesh * 2 - 2, 0, 0})
 
-	vk.CmdPushConstants(
-		cmd,
-		engine.meshPipelineLayout,
-		{.VERTEX},
-		0,
-		size_of(GPUDrawPushConstants),
-		&push_constants,
-	)
+		// MVP in the order the shader expects (usually column-major)
+		mvp := projection * view * model
 
-	vk.CmdBindIndexBuffer(cmd, engine.testMeshes[2].meshBuffers.indexBuffer.buffer, 0, .UINT32)
+		push_constants.worldMatrix = mvp
+		push_constants.vertexBuffer =
+			engine.testMeshes[selectedMesh].meshBuffers.vertexBufferAddress
 
-	vk.CmdDrawIndexed(
-		cmd,
-		engine.testMeshes[2].surfaces[0].count,
-		1,
-		engine.testMeshes[2].surfaces[0].startIndex,
-		0,
-		0,
-	)
+		vk.CmdPushConstants(
+			cmd,
+			engine.meshPipelineLayout,
+			{.VERTEX},
+			0,
+			size_of(GPUDrawPushConstants),
+			&push_constants,
+		)
 
+		vk.CmdBindIndexBuffer(
+			cmd,
+			engine.testMeshes[selectedMesh].meshBuffers.indexBuffer.buffer,
+			0,
+			.UINT32,
+		)
+
+		vk.CmdDrawIndexed(
+			cmd,
+			engine.testMeshes[selectedMesh].surfaces[0].count,
+			1,
+			engine.testMeshes[selectedMesh].surfaces[0].startIndex,
+			0,
+			0,
+		)
+
+	}
 	if true {
 		return
 	}
@@ -1921,6 +1942,10 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		destroy_image(engine, &engine.black_image)
 		destroy_image(engine, &engine.error_checkerboard_image)
 	})
+
+	engine.camera_pos = {0, 0, -5}
+
+	log.info("Initialized default data")
 
 	return .SUCCESS
 }

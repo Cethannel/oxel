@@ -1,5 +1,6 @@
 package engine
 
+import "core:log"
 import vk "vendor:vulkan"
 
 import vkb "../vkbootstrap/"
@@ -178,12 +179,12 @@ descriptor_allocator_growable_destroy_pools :: proc(
 }
 
 descriptor_allocator_growable_allocate :: proc(
-	self: ^DescriptorAllocatorGrowable,
+	dag: ^DescriptorAllocatorGrowable,
 	device: vk.Device,
 	layout: vk.DescriptorSetLayout,
 	pNext: rawptr = nil,
 ) -> vk.DescriptorSet {
-	poolToUse := descriptor_allocator_growable_get_pool(self, device)
+	poolToUse := descriptor_allocator_growable_get_pool(dag, device)
 
 	allocInfo: vk.DescriptorSetAllocateInfo = {}
 	allocInfo.pNext = pNext
@@ -198,16 +199,17 @@ descriptor_allocator_growable_allocate :: proc(
 
 	//allocation failed. Try again
 	if (result == .ERROR_OUT_OF_POOL_MEMORY || result == .ERROR_FRAGMENTED_POOL) {
+		log.warn("Allocation failed, trying again")
 
-		append(&self.fullPools, poolToUse)
+		append(&dag.fullPools, poolToUse)
 
-		poolToUse = descriptor_allocator_growable_get_pool(self, device)
+		poolToUse = descriptor_allocator_growable_get_pool(dag, device)
 		allocInfo.descriptorPool = poolToUse
 
 		assert(vk.AllocateDescriptorSets(device, &allocInfo, &ds) == .SUCCESS)
 	}
 
-	append(&self.readyPools, poolToUse)
+	append(&dag.readyPools, poolToUse)
 	return ds
 }
 
