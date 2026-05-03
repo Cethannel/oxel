@@ -1,5 +1,6 @@
 package main
 
+import "core:c"
 import "core:fmt"
 import "core:log"
 
@@ -12,4 +13,6 @@ main :: proc() {
 	defer engine.cleanup(&vulk)
 
 	engine.run(&vulk)
+
+	//stone := register_cube_full(&vulk, "stone", "textures/sone.png")
 }

@@ -1,10 +1,14 @@
 package engine
 
+import "base:runtime"
 import "core:c"
 import "core:flags"
+import "core:image"
+import "core:image/png"
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
+import "core:odin/tokenizer"
 import sdl2 "vendor:sdl2"
 import vk "vendor:vulkan"
 
@@ -24,15 +28,6 @@ import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
 DeinitFunc :: proc(engine: ^VulkanEngine)
 FrameDeinitFunc :: proc(engine: ^VulkanEngine, frame_data: ^FrameData)
 
-GPUSceneData :: struct {
-	view:              matrix[4, 4]f32,
-	proj:              matrix[4, 4]f32,
-	viewproj:          matrix[4, 4]f32,
-	ambientColor:      [4]f32,
-	sunlightDirection: [4]f32, // w for sun power
-	sunlightColor:     [4]f32,
-}
-
 FrameData :: struct {
 	swapchain_semaphore: vk.Semaphore,
 	render_semaphore:    vk.Semaphore,
@@ -41,9 +36,6 @@ FrameData :: struct {
 	main_command_buffer: vk.CommandBuffer,
 	frame_descriptors:   DescriptorAllocatorGrowable,
 	deletion_queue:      [dynamic]FrameDeinitFunc,
-
-	// TODO: remove me
-	gpu_scene_data:      AllocatedBuffer,
 }
 
 AllocateImage :: struct {
@@ -65,6 +57,19 @@ AllocatedBuffer :: struct {
 	buffer:     vk.Buffer,
 	allocation: vma.Allocation,
 	info:       vma.Allocation_Info,
+}
+
+ChunkVertex :: struct {
+	model_index: u32,
+	packed_pos:  u16,
+}
+
+ModelEntry :: struct {
+	position: [3]f32,
+	uv_x:     f32,
+	normal:   [3]f32,
+	uv_y:     f32,
+	color:    [4]f32,
 }
 
 Vertex :: struct {
@@ -94,71 +99,87 @@ GPUMeshBuffers :: struct {
 GPUDrawPushConstants :: struct {
 	worldMatrix:  matrix[4, 4]f32,
 	vertexBuffer: vk.DeviceAddress,
+	modelBuffer:  vk.DeviceAddress,
 }
 
 FRAME_OVERLAP :: 2
 
 VulkanEngine :: struct {
-	deinitFuncs:                      [dynamic]DeinitFunc,
-	frame_number:                     int,
-	stop_rendering:                   bool,
-	window_extent:                    vk.Extent2D,
-	window:                           ^sdl2.Window,
-	instance:                         ^vkb.Instance,
-	device:                           ^vkb.Device,
-	surface:                          vk.SurfaceKHR,
-	is_initialized:                   bool,
-	swapchain:                        ^vkb.Swapchain,
-	swapchain_images:                 []vk.Image,
-	render_semaphores:                []vk.Semaphore,
-	swapchain_image_views:            []vk.ImageView,
-	swapchain_extent:                 vk.Extent2D,
-	frames:                           [FRAME_OVERLAP]FrameData,
-	graphics_queue:                   vk.Queue,
-	graphics_queue_family:            u32,
-	allocator:                        vma.Allocator,
-	draw_image:                       AllocateImage,
-	depth_image:                      AllocateImage,
-	draw_extent:                      vk.Extent2D,
-	render_scale:                     f32,
-	resize_requested:                 bool,
+	ctx:                            runtime.Context,
+	deinitFuncs:                    [dynamic]DeinitFunc,
+	frame_number:                   int,
+	stop_rendering:                 bool,
+	window_extent:                  vk.Extent2D,
+	window:                         ^sdl2.Window,
+	instance:                       ^vkb.Instance,
+	device:                         ^vkb.Device,
+	surface:                        vk.SurfaceKHR,
+	is_initialized:                 bool,
+	swapchain:                      ^vkb.Swapchain,
+	swapchain_images:               []vk.Image,
+	render_semaphores:              []vk.Semaphore,
+	swapchain_image_views:          []vk.ImageView,
+	swapchain_extent:               vk.Extent2D,
+	frames:                         [FRAME_OVERLAP]FrameData,
+	graphics_queue:                 vk.Queue,
+	graphics_queue_family:          u32,
+	allocator:                      vma.Allocator,
+	draw_image:                     AllocateImage,
+	depth_image:                    AllocateImage,
+	draw_extent:                    vk.Extent2D,
+	render_scale:                   f32,
+	resize_requested:               bool,
 	//
-	global_descriptor_allocator:      DescriptorAllocatorGrowable,
-	draw_image_descriptors:           vk.DescriptorSet,
-	draw_image_descriptor_layout:     vk.DescriptorSetLayout,
+	global_descriptor_allocator:    DescriptorAllocatorGrowable,
+	draw_image_descriptors:         vk.DescriptorSet,
+	draw_image_descriptor_layout:   vk.DescriptorSetLayout,
 	//
-	scene_data:                       GPUSceneData,
-	gpu_scene_data_descriptor_layout: vk.DescriptorSetLayout,
-	//
-	gradient_pipeline_layout:         vk.PipelineLayout,
+	gradient_pipeline_layout:       vk.PipelineLayout,
 	// Imgui
-	imm_fence:                        vk.Fence,
-	imm_command_buffer:               vk.CommandBuffer,
-	imm_command_pool:                 vk.CommandPool,
-	imgui_pool:                       vk.DescriptorPool,
+	imm_fence:                      vk.Fence,
+	imm_command_buffer:             vk.CommandBuffer,
+	imm_command_pool:               vk.CommandPool,
+	imgui_pool:                     vk.DescriptorPool,
 
 	//
-	backgroundEffects:                [dynamic]ComputeEffect,
-	currentBackgroundEffect:          int,
+	backgroundEffects:              [dynamic]ComputeEffect,
+	currentBackgroundEffect:        int,
 
 	//
-	meshPipelineLayout:               vk.PipelineLayout,
-	meshPipeline:                     vk.Pipeline,
+	meshPipelineLayout:             vk.PipelineLayout,
+	meshPipeline:                   vk.Pipeline,
 
 	// :gltf test
-	testMeshes:                       [dynamic]MeshAsset,
+	testMeshes:                     [dynamic]MeshAsset,
 
 	// :images
-	white_image:                      AllocatedImage,
-	black_image:                      AllocatedImage,
-	grey_image:                       AllocatedImage,
-	error_checkerboard_image:         AllocatedImage,
-	default_sampler_linear:           vk.Sampler,
-	default_sampler_nearest:          vk.Sampler,
-	single_image_descriptor_layout:   vk.DescriptorSetLayout,
+	white_image:                    AllocatedImage,
+	black_image:                    AllocatedImage,
+	grey_image:                     AllocatedImage,
+	error_checkerboard_image:       AllocatedImage,
+	default_sampler_linear:         vk.Sampler,
+	default_sampler_nearest:        vk.Sampler,
+	single_image_descriptor_layout: vk.DescriptorSetLayout,
 
 	//
-	camera_pos:                       [3]f32,
+	camera_pos:                     [3]f32,
+
+	// :chunk_meshes
+	chunk_meshes:                   #soa[dynamic]ChunkMesh,
+	chunks:                         #soa[dynamic]Chunk,
+
+	// thing:
+	stone_image:                    AllocatedImage,
+	block_index_buffer:             AllocatedBuffer,
+	block_vertex_buffer:            AllocatedBuffer,
+	block_vertex_buffer_address:    vk.DeviceAddress,
+	model_buffer:                   AllocatedBuffer,
+	model_buffer_address:           vk.DeviceAddress,
+	block_index_len:                u32,
+
+	// :blocks
+	blocks:                         [dynamic]Block,
+	blocks_map:                     map[string]BlockIdx,
 }
 
 ComputePushConstants :: struct {
@@ -494,7 +515,7 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		vk.DestroySurfaceKHR(engine.instance.instance, engine.surface, nil)
 	})
 
-	features := vk.PhysicalDeviceVulkan13Features {
+	features13 := vk.PhysicalDeviceVulkan13Features {
 		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 		dynamicRendering = true,
 		synchronization2 = true,
@@ -505,12 +526,22 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	features12.bufferDeviceAddress = true
 	features12.descriptorIndexing = true
 
+	features11: vk.PhysicalDeviceVulkan11Features
+	features11.sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES
+	features11.storageBuffer16BitAccess = true
+
+
+	features: vk.PhysicalDeviceFeatures
+	features.shaderInt16 = true
+
 	selector := vkb.create_physical_device_selector_with_surface(engine.instance, engine.surface)
 	defer vkb.destroy_physical_device_selector(selector)
 
 	vkb.physical_device_selector_set_minimum_version_values(selector, 1, 3)
+	vkb.physical_device_selector_set_required_features(selector, features)
+	vkb.physical_device_selector_set_required_features_11(selector, features11)
 	vkb.physical_device_selector_set_required_features_12(selector, features12)
-	vkb.physical_device_selector_set_required_features_13(selector, features)
+	vkb.physical_device_selector_set_required_features_13(selector, features13)
 	vkb.physical_device_selector_set_surface(selector, engine.surface)
 
 	physical_device := vkb.physical_device_selector_select(selector) or_return
@@ -1140,15 +1171,6 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 			{.COMPUTE},
 		) or_return
 	}
-	{
-		builder: DescriptorLayoutBuilder
-		descriptor_builder_add_binding(&builder, 0, .UNIFORM_BUFFER)
-		engine.gpu_scene_data_descriptor_layout = descriptor_builder_build(
-			&builder,
-			engine.device.device,
-			{.VERTEX, .FRAGMENT},
-		) or_return
-	}
 
 	{
 		builder: DescriptorLayoutBuilder
@@ -1188,11 +1210,6 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		vk.DestroyDescriptorSetLayout(
 			engine.device.device,
 			engine.draw_image_descriptor_layout,
-			nil,
-		)
-		vk.DestroyDescriptorSetLayout(
-			engine.device.device,
-			engine.gpu_scene_data_descriptor_layout,
 			nil,
 		)
 		vk.DestroyDescriptorSetLayout(
@@ -1529,7 +1546,8 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		descriptor_writer_write_image(
 			&writer,
 			0,
-			engine.error_checkerboard_image.imageView,
+			//engine.error_checkerboard_image.imageView,
+			engine.stone_image.imageView,
 			engine.default_sampler_nearest,
 			.SHADER_READ_ONLY_OPTIMAL,
 			.COMBINED_IMAGE_SAMPLER,
@@ -1565,23 +1583,23 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	aspect := f32(engine.draw_extent.width) / f32(engine.draw_extent.height)
 	near: f32 = 0.01
 
-	for selectedMesh in 0 ..< len(engine.testMeshes) {
-		projection := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
+	projection := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
 
-		view := linalg.matrix4_look_at_f32(
-		engine.camera_pos, // eye
-		{0, 0, 0}, // center (or a look target)
-		{0, 1, 0}, // up
-		)
+	view := linalg.matrix4_look_at_f32(
+	engine.camera_pos, // eye
+	{0, 0, 0}, // center (or a look target)
+	{0, 1, 0}, // up
+	)
 
-		model := linalg.matrix4_translate_f32({cast(f32)selectedMesh * 2 - 2, 0, 0})
+	{
+		model := linalg.matrix4_translate_f32({0, 0, 0})
 
 		// MVP in the order the shader expects (usually column-major)
 		mvp := projection * view * model
 
 		push_constants.worldMatrix = mvp
-		push_constants.vertexBuffer =
-			engine.testMeshes[selectedMesh].meshBuffers.vertexBufferAddress
+		push_constants.vertexBuffer = engine.block_vertex_buffer_address
+		push_constants.modelBuffer = engine.model_buffer_address
 
 		vk.CmdPushConstants(
 			cmd,
@@ -1592,69 +1610,51 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 			&push_constants,
 		)
 
-		vk.CmdBindIndexBuffer(
-			cmd,
-			engine.testMeshes[selectedMesh].meshBuffers.indexBuffer.buffer,
-			0,
-			.UINT32,
-		)
+		vk.CmdBindIndexBuffer(cmd, engine.block_index_buffer.buffer, 0, .UINT32)
+
+		assert(engine.block_index_len == 6 * 6)
 
 		vk.CmdDrawIndexed(
 			cmd,
-			engine.testMeshes[selectedMesh].surfaces[0].count,
+			engine.block_index_len,
 			1,
-			engine.testMeshes[selectedMesh].surfaces[0].startIndex,
+			0, //Start index
 			0,
 			0,
 		)
-
-	}
-	if true {
-		return
 	}
 
-	frame_data := get_current_frame(engine)
+	if false {
+		for selectedMesh, i in engine.testMeshes {
+			model := linalg.matrix4_translate_f32({cast(f32)i * 2 - 2, 0, 0})
 
-	//allocate a new uniform buffer for the scene data
-	err: vk.Result
-	frame_data.gpu_scene_data, err = create_buffer(
-		engine,
-		size_of(GPUSceneData),
-		{.UNIFORM_BUFFER},
-		.Cpu_To_Gpu,
-	)
+			// MVP in the order the shader expects (usually column-major)
+			mvp := projection * view * model
 
-	vk_assert(err)
+			push_constants.worldMatrix = mvp
+			push_constants.vertexBuffer = selectedMesh.meshBuffers.vertexBufferAddress
 
-	//add it to the deletion queue of this frame so it gets deleted once its been used
-	append(
-		&get_current_frame(engine).deletion_queue,
-		proc(engine: ^VulkanEngine, frame_data: ^FrameData) {
-			destroy_buffer(engine, frame_data.gpu_scene_data)
-		},
-	)
+			vk.CmdPushConstants(
+				cmd,
+				engine.meshPipelineLayout,
+				{.VERTEX},
+				0,
+				size_of(GPUDrawPushConstants),
+				&push_constants,
+			)
 
-	//write the buffer
-	sceneUniformData := cast(^GPUSceneData)frame_data.gpu_scene_data.info.mapped_data
-	sceneUniformData^ = engine.scene_data
+			vk.CmdBindIndexBuffer(cmd, selectedMesh.meshBuffers.indexBuffer.buffer, 0, .UINT32)
 
-	//create a descriptor set that binds that buffer and update it
-	globalDescriptor := descriptor_allocator_growable_allocate(
-		&frame_data.frame_descriptors,
-		engine.device.device,
-		engine.gpu_scene_data_descriptor_layout,
-	)
-
-	writer: DescriptorWriter
-	descriptor_writer_write_buffer(
-		&writer,
-		0,
-		frame_data.gpu_scene_data.buffer,
-		size_of(GPUSceneData),
-		0,
-		.UNIFORM_BUFFER,
-	)
-	descriptor_writer_update_set(&writer, engine.device.device, globalDescriptor)
+			vk.CmdDrawIndexed(
+				cmd,
+				selectedMesh.surfaces[0].count,
+				1,
+				selectedMesh.surfaces[0].startIndex,
+				0,
+				0,
+			)
+		}
+	}
 }
 
 create_buffer :: proc(
@@ -1695,6 +1695,164 @@ destroy_buffer :: proc(engine: ^VulkanEngine, #by_ptr buffer: AllocatedBuffer) {
 	vma.destroy_buffer(engine.allocator, buffer.buffer, buffer.allocation)
 }
 
+createSSBO :: proc(
+	engine: ^VulkanEngine,
+	buffer_size: vk.DeviceSize,
+) -> (
+	buffer: AllocatedBuffer,
+	device_address: vk.DeviceAddress,
+	err: vk.Result = nil,
+) {
+	buffer = create_buffer(
+		engine,
+		buffer_size,
+		{.STORAGE_BUFFER, .TRANSFER_DST, .SHADER_DEVICE_ADDRESS},
+		.Gpu_Only,
+	) or_return
+
+	deviceAdressInfo: vk.BufferDeviceAddressInfo = {
+		sType  = .BUFFER_DEVICE_ADDRESS_INFO,
+		buffer = buffer.buffer,
+	}
+	device_address = vk.GetBufferDeviceAddress(engine.device.device, &deviceAdressInfo)
+
+	return
+}
+
+BufferCreateType :: enum {
+	SSBO,
+	Index,
+}
+
+BufferCreateUploadInfo :: struct {
+	buffer:  ^AllocatedBuffer,
+	address: ^vk.DeviceAddress,
+	size:    vk.DeviceSize,
+	data:    rawptr,
+	type:    BufferCreateType,
+}
+
+buffer_create_upload_info :: proc(
+	buffer: ^AllocatedBuffer,
+	address: ^vk.DeviceAddress,
+	data: []$T,
+	type: BufferCreateType,
+) -> BufferCreateUploadInfo {
+	return BufferCreateUploadInfo {
+		buffer = buffer,
+		address = address,
+		size = cast(vk.DeviceSize)(size_of(T) * len(data)),
+		data = raw_data(data),
+		type = type,
+	}
+}
+
+create_and_upload_ssbo :: proc(
+	engine: ^VulkanEngine,
+	create_infos: []BufferCreateUploadInfo,
+) -> vk.Result {
+	total_size: vk.DeviceSize = 0
+	for info in create_infos {
+		total_size += info.size
+		assert(info.buffer != nil)
+		switch info.type {
+		case .SSBO:
+			assert(info.address != nil)
+			info.buffer^, info.address^ = createSSBO(engine, info.size) or_return
+		case .Index:
+			info.buffer^ = create_buffer(
+				engine,
+				info.size,
+				{.INDEX_BUFFER, .TRANSFER_DST},
+				.Gpu_Only,
+			) or_return
+		}
+	}
+
+	staging := create_buffer(engine, total_size, {.TRANSFER_SRC}, .Cpu_Only) or_return
+	defer destroy_buffer(engine, staging)
+
+	data: rawptr = ---
+
+	vma.map_memory(engine.allocator, staging.allocation, &data)
+	defer vma.unmap_memory(engine.allocator, staging.allocation)
+
+	offset: vk.DeviceSize = 0
+	for info in create_infos {
+		mem.copy(mem.ptr_offset(cast([^]u8)data, offset), info.data, cast(int)info.size)
+		offset += info.size
+	}
+
+	{
+		cmd := immediate_start(engine) or_return
+
+		offset = 0
+
+		for info in create_infos {
+			vertexCopy: vk.BufferCopy = {}
+			vertexCopy.dstOffset = 0
+			vertexCopy.srcOffset = offset
+			vertexCopy.size = info.size
+
+			vk.CmdCopyBuffer(cmd, staging.buffer, info.buffer.buffer, 1, &vertexCopy)
+
+			offset += info.size
+		}
+
+		immediate_submit(engine, cmd) or_return
+	}
+
+	return nil
+}
+
+uploadBuffers :: proc(engine: ^VulkanEngine, buffers: []struct {
+		buffer: AllocatedBuffer,
+		size:   vk.DeviceSize,
+		data:   rawptr,
+		offset: vk.DeviceSize,
+	}) -> vk.Result {
+
+	total_size: vk.DeviceSize = 0
+	for buffer in buffers {
+		total_size += buffer.size
+	}
+
+	staging := create_buffer(engine, total_size, {.TRANSFER_SRC}, .Cpu_Only) or_return
+	defer destroy_buffer(engine, staging)
+
+	data: rawptr = ---
+
+	vma.map_memory(engine.allocator, staging.allocation, &data)
+	defer vma.unmap_memory(engine.allocator, staging.allocation)
+
+	offset: vk.DeviceSize = 0
+	for buffer in buffers {
+		mem.copy(mem.ptr_offset(cast([^]u8)data, offset), buffer.data, cast(int)buffer.size)
+		offset += buffer.size
+	}
+
+	{
+		cmd := immediate_start(engine) or_return
+
+		offset = 0
+
+		for buffer in buffers {
+			vertexCopy: vk.BufferCopy = {}
+			vertexCopy.dstOffset = buffer.offset
+			vertexCopy.srcOffset = 0
+			vertexCopy.size = buffer.size
+
+			vk.CmdCopyBuffer(cmd, staging.buffer, buffer.buffer.buffer, 1, &vertexCopy)
+
+			offset += buffer.size
+		}
+
+		immediate_submit(engine, cmd) or_return
+	}
+
+	return nil
+}
+
 uploadMesh :: proc(
 	engine: ^VulkanEngine,
 	indices: []u32,
@@ -1708,6 +1866,7 @@ uploadMesh :: proc(
 
 	newSurface: GPUMeshBuffers
 
+	//newSurface.vertexBuffer, newSurface.vertexBufferAddress = uploadSSBO(engine, vertices)
 	newSurface.vertexBuffer = create_buffer(
 		engine,
 		vertexBufferSize,
@@ -1752,11 +1911,6 @@ uploadMesh :: proc(
 		cast(int)indexBufferSize,
 	)
 
-	UserData :: struct {
-		staging:    AllocatedBuffer,
-		newSurface: GPUMeshBuffers,
-	}
-
 	{
 		cmd := immediate_start(engine) or_return
 
@@ -1797,10 +1951,7 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	defer vk.DestroyShaderModule(engine.device.device, triangleFragShader, nil)
 
 	triangleVertexShader: vk.ShaderModule
-	triangleVertexShader, err = load_shader_module(
-		"shaders/color_triangle_mesh.vert.spv",
-		engine.device.device,
-	)
+	triangleVertexShader, err = load_shader_module("shaders/chunk.vert.spv", engine.device.device)
 	if err == nil {
 		log.info("Triangle vertex shader succesfully loaded")
 	} else {
@@ -1919,6 +2070,60 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		.R8G8B8A8_UNORM,
 		{.SAMPLED},
 	) or_return
+
+	stone, s_w, s_h, s_ok := load_image_rgba(
+		"assets/untrached/Faithful/assets/minecraft/textures/blocks/stone.png",
+	)
+	if !s_ok {
+		fmt.panicf("Failed to load stone image")
+	}
+	defer delete(stone)
+
+	engine.stone_image = create_image_with_data(
+		engine,
+		raw_data(stone),
+		vk.Extent3D{cast(u32)s_w, cast(u32)s_h, 1},
+		.R8G8B8A8_UNORM,
+		{.SAMPLED},
+	) or_return
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		destroy_image(engine, &engine.stone_image)
+	})
+
+	indices := make([]u32, len(baseIndices))
+	defer delete(indices)
+
+	for i in 0 ..< 6 {
+		base := i * 6
+		offset: u32 = cast(u32)i * 4
+		for j in 0 ..< 6 {
+			indices[base + j] = baseIndices[base + j] + offset
+		}
+	}
+
+	create_upload_infos := [?]BufferCreateUploadInfo {
+		buffer_create_upload_info(
+			&engine.block_vertex_buffer,
+			&engine.block_vertex_buffer_address,
+			baseChunkVertices[:],
+			.SSBO,
+		),
+		buffer_create_upload_info(
+			&engine.model_buffer,
+			&engine.model_buffer_address,
+			baseVertices[:],
+			.SSBO,
+		),
+		buffer_create_upload_info(&engine.block_index_buffer, nil, indices[:], .Index),
+	}
+	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
+	engine.block_index_len = len(baseIndices)
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		destroy_buffer(engine, engine.block_vertex_buffer)
+		destroy_buffer(engine, engine.model_buffer)
+		destroy_buffer(engine, engine.block_index_buffer)
+	})
 
 	sampl: vk.SamplerCreateInfo = {
 		sType = .SAMPLER_CREATE_INFO,
@@ -2097,4 +2302,49 @@ Color :: bit_field u32 {
 	g: u8 | 8,
 	b: u8 | 8,
 	a: u8 | 8,
+}
+
+load_image_rgba :: proc(
+	filename: string,
+	allocator := context.allocator,
+) -> (
+	pixels: []u32,
+	w, h: int,
+	ok: bool,
+) {
+	img, err := image.load_from_file(filename, {.alpha_add_if_missing}, allocator)
+	if err != nil {
+		return nil, 0, 0, false
+	}
+	defer image.destroy(img)
+
+	w = img.width
+	h = img.height
+
+	if img.channels != 4 || img.depth != 8 {
+		log.errorf(
+			"Image `%s` is not the correct channes and depth: %d, %d",
+			filename,
+			img.channels,
+			img.depth,
+		)
+		ok = false
+		return
+	}
+
+	raw_pixels := mem.slice_data_cast([]image.RGBA_Pixel, img.pixels.buf[:])
+
+	pixels = make([]u32, len(raw_pixels))
+	mem.copy(raw_data(pixels), raw_data(raw_pixels), len(raw_pixels) * size_of(image.RGBA_Pixel))
+
+	return pixels, w, h, true
+}
+
+// Helper to pack position
+make_chunk_vertex :: proc(x, y, z: u32, model_idx: u32) -> ChunkVertex {
+	packed := u16(
+		(x & 0xF) | ((y & 0xFF) << 4) | ((z & 0xF) << 12), // 4 bits// 8 bits// 4 bits
+	)
+
+	return ChunkVertex{packed_pos = packed, model_index = model_idx}
 }

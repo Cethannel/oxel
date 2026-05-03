@@ -6,3 +6,6 @@ patch: build
 
 run: patch
 	./vulkan_guide
+
+shaders:
+	cd shaders && ./compile.sh
