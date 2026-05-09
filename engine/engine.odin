@@ -1583,19 +1583,19 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	aspect := f32(engine.draw_extent.width) / f32(engine.draw_extent.height)
 	near: f32 = 0.01
 
-	projection := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
+	projection_from_view := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
 
-	view := linalg.matrix4_look_at_f32(
+	view_from_world := linalg.matrix4_look_at_f32(
 	engine.camera_pos, // eye
 	{0, 0, 0}, // center (or a look target)
 	{0, 1, 0}, // up
 	)
 
 	{
-		model := linalg.matrix4_translate_f32({0, 0, 0})
+		world_from_model := linalg.matrix4_translate_f32({0, 0, 0})
 
 		// MVP in the order the shader expects (usually column-major)
-		mvp := projection * view * model
+		mvp := projection_from_view * view_from_world * world_from_model
 
 		push_constants.worldMatrix = mvp
 		push_constants.vertexBuffer = engine.block_vertex_buffer_address
@@ -1629,7 +1629,7 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 			model := linalg.matrix4_translate_f32({cast(f32)i * 2 - 2, 0, 0})
 
 			// MVP in the order the shader expects (usually column-major)
-			mvp := projection * view * model
+			mvp := projection_from_view * view_from_world * model
 
 			push_constants.worldMatrix = mvp
 			push_constants.vertexBuffer = selectedMesh.meshBuffers.vertexBufferAddress
