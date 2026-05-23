@@ -2,9 +2,20 @@ package engine
 
 import "core:image"
 import "core:log"
+import "core:math"
 import "core:mem"
+
+import vk "vendor:vulkan"
+
 AtlasBuilder :: struct {
-	textures: map[string]string,
+	textures:         map[string]string,
+	max_texture_size: u32,
+}
+
+Atlas :: struct {
+	texture_map:  map[string]u32,
+	texture_size: u32,
+	image:        AllocatedImage,
 }
 
 atlas_builder_init :: proc(ab: ^AtlasBuilder, allocator := context.allocator) {
@@ -15,6 +26,7 @@ atlas_builder_register_texture :: proc(
 	ab: ^AtlasBuilder,
 	name: string,
 	image_path: string,
+	size: u32,
 ) -> (
 	ok: bool,
 ) {
@@ -30,33 +42,95 @@ atlas_builder_register_texture :: proc(
 
 	ab.textures[name] = image_path
 
+	if size > ab.max_texture_size {
+		ab.max_texture_size = size
+	}
+
 	return true
 }
 
 atlas_builder_build :: proc(
 	ab: ^AtlasBuilder,
+	engine: ^VulkanEngine,
 	allocator := context.allocator,
 ) -> (
-	data: []u8,
-	ok: bool,
+	atlas: Atlas,
+	ok: bool = false,
 ) {
+	context.allocator = allocator
+	err: image.Error
+	vk_err: vk.Result
 	arena: mem.Dynamic_Arena
+	data := make([]u32, ab.max_texture_size * ab.max_texture_size * cast(u32)len(ab.textures))
+	defer delete(data, allocator = allocator)
+	atlas.texture_map = make(map[string]u32, len(ab.textures))
+	defer if err != nil || vk_err != .SUCCESS {delete(atlas.texture_map)}
 	mem.dynamic_arena_init(&arena, allocator, allocator)
 	defer mem.dynamic_arena_free_all(&arena)
 	context.allocator = mem.dynamic_arena_allocator(&arena)
-	texture_files := make([]image.Image, len(ab.textures))
-	defer delete(texture_files)
 
-	i := 0
+	texture_len := ab.max_texture_size * ab.max_texture_size
+
+	i: u32 = 0
 	for k, v in ab.textures {
 		defer i += 1
 
-		img, err := image.load_from_file(v, {.alpha_add_if_missing})
+		img: ^image.Image
+		img, err = image.load_from_file(v, {.alpha_add_if_missing})
+		defer image.destroy(img)
 		if err != nil {
 			log.errorf("Failed to load image(%s): %e", v, err)
-			return nil, false
+			return
 		}
+		if img.width != img.height {
+			log.errorf("Missmatch in width and height for: %s", v)
+			log.errorf("Width: %d\nHeight:%d", img.width, img.height)
+			return
+		}
+		input := mem.slice_data_cast([]u32, img.pixels.buf[:])
+		copy_square_image_scaled(
+			input,
+			cast(u32)img.width,
+			data[i * texture_len:][:texture_len],
+			ab.max_texture_size,
+		)
+		atlas.texture_map[k] = i
 	}
 
-	return nil, false
+	atlas.image, vk_err = create_image_with_data(
+		engine,
+		raw_data(data),
+		vk.Extent3D{width = ab.max_texture_size, height = i * ab.max_texture_size, depth = 1},
+		.R8G8B8A8_UNORM,
+		{.SAMPLED},
+	)
+
+	delete(ab.textures)
+
+	return atlas, true
+}
+
+copy_square_image_scaled :: proc(input: []u32, input_size: u32, output: []u32, output_size: u32) {
+	assert_eq(cast(int)(input_size * input_size), len(input))
+	assert_eq(cast(int)(output_size * output_size), len(output))
+	assert(input_size <= output_size)
+
+	scale_factor := output_size / input_size
+
+	for in_x in 0 ..< input_size {
+		for num_x in 0 ..< scale_factor {
+			out_x := in_x * scale_factor + num_x
+			for in_y in 0 ..< input_size {
+				for num_y in 0 ..< scale_factor {
+					out_y := in_y * scale_factor + num_x
+					output[out_y * output_size + out_x] = input[in_y * input_size + in_x]
+				}
+			}
+		}
+	}
+}
+
+atlas_destroy :: proc(atlas: ^Atlas, engine: ^VulkanEngine) {
+	delete(atlas.texture_map)
+	destroy_image(engine, &atlas.image)
 }

@@ -1,5 +1,6 @@
 package engine
 
+import "base:runtime"
 // packed_pos = (x & 0xF) | ((y & 0xFF) << 4) | ((z & 0xF) << 12)
 // model_index = vertex index into baseVertices (for UV/normal/color lookup)
 baseChunkVertices := [?]ChunkVertex {
@@ -35,7 +36,7 @@ baseChunkVertices := [?]ChunkVertex {
 	{packed_pos = 0, model_index = 23}, // (1,1,0)
 }
 
-baseVertices := [?]Vertex {
+modelVertices := [?]ModelVertex {
 	{
 		position = {0.0, 0.0, 0.0},
 		uv_x = 0,
@@ -248,7 +249,16 @@ baseIndices := [?]u32 {
 
 BlockIdx :: distinct u32
 
-Block :: struct {}
+BlockVtable :: struct {
+	gen_model_vertices: ^proc "c" (userdata: rawptr, engine: ^VulkanEngine),
+	gen_vertices:       ^proc "c" (userdata: rawptr, engine: ^VulkanEngine),
+}
+
+@(tag = "export")
+Block :: struct {
+	userdata: rawptr,
+	vtable:   BlockVtable,
+}
 
 @(private = "file")
 @(export, link_name = "register_block")
@@ -270,4 +280,17 @@ register_block :: proc(engine: ^VulkanEngine, name: string, block: Block) -> Blo
 	engine.blocks_map[name] = idx
 
 	return idx
+}
+
+ModelVertexBuilder :: struct {
+	allocator: runtime.Allocator,
+	vertices:  [dynamic]ModelVertex,
+}
+
+@(private = "file")
+@(export, link_name = "model_vertex_builder_init")
+model_vertex_builder_init_c :: proc "c" (engine: ^VulkanEngine) {
+}
+
+model_vertex_builder_init :: proc(engine: ^VulkanEngine) {
 }

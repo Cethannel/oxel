@@ -25,6 +25,8 @@ import imgui "../vendor/gitlab.com/L-4/odin-imgui"
 import imgui_sdl2 "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_sdl2"
 import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
 
+print_resize :: false
+
 DeinitFunc :: proc(engine: ^VulkanEngine)
 FrameDeinitFunc :: proc(engine: ^VulkanEngine, frame_data: ^FrameData)
 
@@ -36,14 +38,6 @@ FrameData :: struct {
 	main_command_buffer: vk.CommandBuffer,
 	frame_descriptors:   DescriptorAllocatorGrowable,
 	deletion_queue:      [dynamic]FrameDeinitFunc,
-}
-
-AllocateImage :: struct {
-	image:        vk.Image,
-	image_view:   vk.ImageView,
-	allocation:   vma.Allocation,
-	image_extent: vk.Extent3D,
-	image_format: vk.Format,
 }
 
 ComputeEffect :: struct {
@@ -64,15 +58,7 @@ ChunkVertex :: struct {
 	packed_pos:  u16,
 }
 
-ModelEntry :: struct {
-	position: [3]f32,
-	uv_x:     f32,
-	normal:   [3]f32,
-	uv_y:     f32,
-	color:    [4]f32,
-}
-
-Vertex :: struct {
+ModelVertex :: struct {
 	position: [3]f32,
 	uv_x:     f32,
 	normal:   [3]f32,
@@ -124,8 +110,8 @@ VulkanEngine :: struct {
 	graphics_queue:                 vk.Queue,
 	graphics_queue_family:          u32,
 	allocator:                      vma.Allocator,
-	draw_image:                     AllocateImage,
-	depth_image:                    AllocateImage,
+	draw_image:                     AllocatedImage,
+	depth_image:                    AllocatedImage,
 	draw_extent:                    vk.Extent2D,
 	render_scale:                   f32,
 	resize_requested:               bool,
@@ -169,7 +155,6 @@ VulkanEngine :: struct {
 	chunks:                         #soa[dynamic]Chunk,
 
 	// thing:
-	stone_image:                    AllocatedImage,
 	block_index_buffer:             AllocatedBuffer,
 	block_vertex_buffer:            AllocatedBuffer,
 	block_vertex_buffer_address:    vk.DeviceAddress,
@@ -180,6 +165,9 @@ VulkanEngine :: struct {
 	// :blocks
 	blocks:                         [dynamic]Block,
 	blocks_map:                     map[string]BlockIdx,
+
+	// 
+	texture_atlas:                  Atlas,
 }
 
 ComputePushConstants :: struct {
@@ -271,7 +259,9 @@ run :: proc(engine: ^VulkanEngine) {
 		}
 
 		if (engine.resize_requested) {
-			log.info("Resizing swapchain")
+			if print_resize {
+				log.info("Resizing swapchain")
+			}
 			assert(resize_swapchain(engine) == nil, "Failed to resize swapchain")
 		}
 
@@ -356,7 +346,9 @@ draw :: proc(engine: ^VulkanEngine) {
 	)
 
 	if e == .ERROR_OUT_OF_DATE_KHR {
-		log.infof("Out of data nextimage: %s", e)
+		if print_resize {
+			log.infof("Out of data nextimage: %s", e)
+		}
 		engine.resize_requested = true
 		return
 	}
@@ -377,11 +369,11 @@ draw :: proc(engine: ^VulkanEngine) {
 	engine.draw_extent.height =
 	cast(u32)(cast(f32)(min(
 				engine.swapchain_extent.height,
-				engine.draw_image.image_extent.height,
+				engine.draw_image.imageExtent.height,
 			)) *
 		engine.render_scale)
 	engine.draw_extent.width =
-	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.image_extent.width)) *
+	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.imageExtent.width)) *
 		engine.render_scale)
 
 
@@ -466,7 +458,9 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	presentResult := vk.QueuePresentKHR(engine.graphics_queue, &presentInfo)
 	if presentResult == .ERROR_OUT_OF_DATE_KHR || presentResult == .SUBOPTIMAL_KHR {
-		log.info("Out of data present")
+		if print_resize {
+			log.info("Out of data present")
+		}
 		engine.resize_requested = true
 	}
 
@@ -595,8 +589,8 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	drawImageExtent: vk.Extent3D = {engine.window_extent.width, engine.window_extent.height, 1}
 
 	//hardcoding the draw format to 32 bit float
-	engine.draw_image.image_format = .R16G16B16A16_SFLOAT
-	engine.draw_image.image_extent = drawImageExtent
+	engine.draw_image.imageFormat = .R16G16B16A16_SFLOAT
+	engine.draw_image.imageExtent = drawImageExtent
 
 	drawImageUsages := vk.ImageUsageFlags{}
 	drawImageUsages |= {.TRANSFER_SRC}
@@ -604,11 +598,7 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	drawImageUsages |= {.STORAGE}
 	drawImageUsages |= {.COLOR_ATTACHMENT}
 
-	rimg_info := image_create_info(
-		engine.draw_image.image_format,
-		drawImageUsages,
-		drawImageExtent,
-	)
+	rimg_info := image_create_info(engine.draw_image.imageFormat, drawImageUsages, drawImageExtent)
 
 	//for the draw image, we want to allocate it from gpu local memory
 	rimg_allocinfo := vma.Allocation_Create_Info{}
@@ -627,26 +617,26 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 
 	//build a image-view for the draw image to use for rendering
 	rview_info := imageview_create_info(
-		engine.draw_image.image_format,
+		engine.draw_image.imageFormat,
 		engine.draw_image.image,
 		{.COLOR},
 	)
 
 	vkb.vk_check(
-		vk.CreateImageView(engine.device.device, &rview_info, nil, &engine.draw_image.image_view),
+		vk.CreateImageView(engine.device.device, &rview_info, nil, &engine.draw_image.imageView),
 	) or_return
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		vk.DestroyImageView(engine.device.device, engine.draw_image.image_view, nil)
+		vk.DestroyImageView(engine.device.device, engine.draw_image.imageView, nil)
 		vma.destroy_image(engine.allocator, engine.draw_image.image, engine.draw_image.allocation)
 	})
 
-	engine.depth_image.image_format = .D32_SFLOAT
-	engine.depth_image.image_extent = drawImageExtent
+	engine.depth_image.imageFormat = .D32_SFLOAT
+	engine.depth_image.imageExtent = drawImageExtent
 	depthImageUsages: vk.ImageUsageFlags = {.DEPTH_STENCIL_ATTACHMENT}
 
 	dimg_info := image_create_info(
-		engine.depth_image.image_format,
+		engine.depth_image.imageFormat,
 		depthImageUsages,
 		drawImageExtent,
 	)
@@ -663,17 +653,17 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 
 	//build a image-view for the draw image to use for rendering
 	dview_info := imageview_create_info(
-		engine.depth_image.image_format,
+		engine.depth_image.imageFormat,
 		engine.depth_image.image,
 		{.DEPTH},
 	)
 
 	vkb.vk_check(
-		vk.CreateImageView(engine.device.device, &dview_info, nil, &engine.depth_image.image_view),
+		vk.CreateImageView(engine.device.device, &dview_info, nil, &engine.depth_image.imageView),
 	) or_return
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		vk.DestroyImageView(engine.device.device, engine.depth_image.image_view, nil)
+		vk.DestroyImageView(engine.device.device, engine.depth_image.imageView, nil)
 		vma.destroy_image(
 			engine.allocator,
 			engine.depth_image.image,
@@ -1193,7 +1183,7 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		descriptor_writer_write_image(
 			&writer,
 			0,
-			engine.draw_image.image_view,
+			engine.draw_image.imageView,
 			0,
 			.GENERAL,
 			.STORAGE_IMAGE,
@@ -1519,13 +1509,9 @@ rendering_info :: proc(
 }
 
 draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
-	colorAttachment := attachment_info(
-		engine.draw_image.image_view,
-		nil,
-		.COLOR_ATTACHMENT_OPTIMAL,
-	)
+	colorAttachment := attachment_info(engine.draw_image.imageView, nil, .COLOR_ATTACHMENT_OPTIMAL)
 	depthAttachment := depth_attachment_info(
-		engine.depth_image.image_view,
+		engine.depth_image.imageView,
 		.DEPTH_ATTACHMENT_OPTIMAL,
 	)
 
@@ -1547,7 +1533,7 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 			&writer,
 			0,
 			//engine.error_checkerboard_image.imageView,
-			engine.stone_image.imageView,
+			engine.texture_atlas.image.imageView,
 			engine.default_sampler_nearest,
 			.SHADER_READ_ONLY_OPTIMAL,
 			.COMBINED_IMAGE_SAMPLER,
@@ -1611,8 +1597,6 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		)
 
 		vk.CmdBindIndexBuffer(cmd, engine.block_index_buffer.buffer, 0, .UINT32)
-
-		assert(engine.block_index_len == 6 * 6)
 
 		vk.CmdDrawIndexed(
 			cmd,
@@ -1856,12 +1840,12 @@ uploadBuffers :: proc(engine: ^VulkanEngine, buffers: []struct {
 uploadMesh :: proc(
 	engine: ^VulkanEngine,
 	indices: []u32,
-	vertices: []Vertex,
+	vertices: []ModelVertex,
 ) -> (
 	buffer: GPUMeshBuffers,
 	err: vk.Result,
 ) {
-	vertexBufferSize := cast(vk.DeviceSize)(len(vertices) * size_of(Vertex))
+	vertexBufferSize := cast(vk.DeviceSize)(len(vertices) * size_of(ModelVertex))
 	indexBufferSize := cast(vk.DeviceSize)(len(indices) * size_of(u32))
 
 	newSurface: GPUMeshBuffers
@@ -2003,8 +1987,8 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	pipeline_builder_enable_depthtest(&pipelineBuilder, true, .GREATER_OR_EQUAL)
 
 	//connect the image format we will draw into, from draw image
-	pipeline_builder_set_color_attachment_format(&pipelineBuilder, engine.draw_image.image_format)
-	pipeline_builder_set_depth_format(&pipelineBuilder, engine.depth_image.image_format)
+	pipeline_builder_set_color_attachment_format(&pipelineBuilder, engine.draw_image.imageFormat)
+	pipeline_builder_set_depth_format(&pipelineBuilder, engine.depth_image.imageFormat)
 
 	//finally build the pipeline
 	engine.meshPipeline = pipeline_builder_build(&pipelineBuilder, engine.device.device) or_return
@@ -2071,54 +2055,99 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		{.SAMPLED},
 	) or_return
 
-	stone, s_w, s_h, s_ok := load_image_rgba(
+	atlas_builder: AtlasBuilder
+	atlas_builder_init(&atlas_builder)
+	atlas_builder_register_texture(
+		&atlas_builder,
+		"stone",
 		"assets/untrached/Faithful/assets/minecraft/textures/blocks/stone.png",
+		32,
 	)
-	if !s_ok {
-		fmt.panicf("Failed to load stone image")
-	}
-	defer delete(stone)
-
-	engine.stone_image = create_image_with_data(
-		engine,
-		raw_data(stone),
-		vk.Extent3D{cast(u32)s_w, cast(u32)s_h, 1},
-		.R8G8B8A8_UNORM,
-		{.SAMPLED},
-	) or_return
+	atlas_builder_register_texture(
+		&atlas_builder,
+		"dirt",
+		"assets/untrached/Faithful/assets/minecraft/textures/blocks/dirt.png",
+		32,
+	)
+	atlas_builder_register_texture(
+		&atlas_builder,
+		"planks_oak",
+		"assets/untrached/Faithful/assets/minecraft/textures/blocks/planks_oak.png",
+		32,
+	)
+	engine.texture_atlas, ok = atlas_builder_build(&atlas_builder, engine)
+	assert(ok)
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		destroy_image(engine, &engine.stone_image)
+		atlas_destroy(&engine.texture_atlas, engine)
 	})
 
-	indices := make([]u32, len(baseIndices))
+	indices := make([]u32, len(baseIndices) * len(engine.texture_atlas.texture_map))
 	defer delete(indices)
 
-	for i in 0 ..< 6 {
-		base := i * 6
-		offset: u32 = cast(u32)i * 4
-		for j in 0 ..< 6 {
-			indices[base + j] = baseIndices[base + j] + offset
+	max_index: u32 = 0
+	for tex_i in 0 ..< len(engine.texture_atlas.texture_map) {
+		local_max: u32 = max_index
+		for face in 0 ..< 6 {
+			base := face * 6
+			offset: u32 = cast(u32)face * 4
+			for j in 0 ..< 6 {
+				index := baseIndices[base + j] + offset + max_index
+				indices[tex_i * len(baseIndices) + base + j] = index
+				local_max = max(index, local_max)
+			}
 		}
+		max_index = local_max + 1
+	}
+
+	model_buffer := make([]ModelVertex, len(modelVertices) * len(engine.texture_atlas.texture_map))
+	defer delete(model_buffer)
+	for i in 0 ..< len(engine.texture_atlas.texture_map) {
+		model := modelVertices
+		for &vertex in model {
+			y_offset := (1.0 / cast(f32)len(engine.texture_atlas.texture_map))
+			vertex.uv_x *= 1.0
+			vertex.uv_y *= y_offset
+			vertex.uv_y += y_offset * cast(f32)i
+		}
+		copy(model_buffer[i * len(model):][:len(model)], model[:])
+	}
+
+	chunk_vertices := make(
+		[]ChunkVertex,
+		len(baseChunkVertices) * len(engine.texture_atlas.texture_map),
+	)
+	defer delete(chunk_vertices)
+	for i in 0 ..< len(engine.texture_atlas.texture_map) {
+		block := baseChunkVertices
+		for &vertex in block {
+			vertex = make_chunk_vertex(
+				0,
+				cast(u32)i,
+				0,
+				vertex.model_index + cast(u32)i * cast(u32)len(modelVertices),
+			)
+		}
+		copy(chunk_vertices[i * len(block):][:len(block)], block[:])
 	}
 
 	create_upload_infos := [?]BufferCreateUploadInfo {
 		buffer_create_upload_info(
 			&engine.block_vertex_buffer,
 			&engine.block_vertex_buffer_address,
-			baseChunkVertices[:],
+			chunk_vertices,
 			.SSBO,
 		),
 		buffer_create_upload_info(
 			&engine.model_buffer,
 			&engine.model_buffer_address,
-			baseVertices[:],
+			model_buffer,
 			.SSBO,
 		),
 		buffer_create_upload_info(&engine.block_index_buffer, nil, indices[:], .Index),
 	}
 	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
-	engine.block_index_len = len(baseIndices)
+	engine.block_index_len = cast(u32)len(indices)
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		destroy_buffer(engine, engine.block_vertex_buffer)
 		destroy_buffer(engine, engine.model_buffer)
@@ -2158,19 +2187,84 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 resize_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	vkb.vk_check(vk.DeviceWaitIdle(engine.device.device)) or_return
 
-	log.info("Destroying swapchain")
-
 	destroy_swapchain(engine)
 
-	log.info("Destroyed swapchain")
+	vk.DestroyImageView(engine.device.device, engine.draw_image.imageView, nil)
+	vma.destroy_image(engine.allocator, engine.draw_image.image, engine.draw_image.allocation)
+	vk.DestroyImageView(engine.device.device, engine.depth_image.imageView, nil)
+	vma.destroy_image(engine.allocator, engine.depth_image.image, engine.depth_image.allocation)
 
 	w, h: c.int
 	sdl2.GetWindowSize(engine.window, &w, &h)
 	engine.window_extent.width = cast(u32)w
 	engine.window_extent.height = cast(u32)h
 
-	log.info("Creating swapchain")
 	create_swapchain(engine, engine.window_extent.width, engine.window_extent.height) or_return
+
+	drawImageExtent := vk.Extent3D{engine.window_extent.width, engine.window_extent.height, 1}
+
+	engine.draw_image.imageExtent = drawImageExtent
+	rimg_info := image_create_info(
+		engine.draw_image.imageFormat,
+		{.TRANSFER_SRC, .TRANSFER_DST, .STORAGE, .COLOR_ATTACHMENT},
+		drawImageExtent,
+	)
+	rimg_allocinfo := vma.Allocation_Create_Info {
+		usage          = .Gpu_Only,
+		required_flags = {.DEVICE_LOCAL},
+	}
+	vma.create_image(
+		engine.allocator,
+		rimg_info,
+		rimg_allocinfo,
+		&engine.draw_image.image,
+		&engine.draw_image.allocation,
+		nil,
+	)
+	rview_info := imageview_create_info(
+		engine.draw_image.imageFormat,
+		engine.draw_image.image,
+		{.COLOR},
+	)
+	vkb.vk_check(
+		vk.CreateImageView(engine.device.device, &rview_info, nil, &engine.draw_image.imageView),
+	) or_return
+
+	engine.depth_image.imageExtent = drawImageExtent
+	dimg_info := image_create_info(
+		engine.depth_image.imageFormat,
+		{.DEPTH_STENCIL_ATTACHMENT},
+		drawImageExtent,
+	)
+	vma.create_image(
+		engine.allocator,
+		dimg_info,
+		rimg_allocinfo,
+		&engine.depth_image.image,
+		&engine.depth_image.allocation,
+		nil,
+	)
+	dview_info := imageview_create_info(
+		engine.depth_image.imageFormat,
+		engine.depth_image.image,
+		{.DEPTH},
+	)
+	vkb.vk_check(
+		vk.CreateImageView(engine.device.device, &dview_info, nil, &engine.depth_image.imageView),
+	) or_return
+
+	{
+		writer: DescriptorWriter
+		descriptor_writer_write_image(
+			&writer,
+			0,
+			engine.draw_image.imageView,
+			0,
+			.GENERAL,
+			.STORAGE_IMAGE,
+		)
+		descriptor_writer_update_set(&writer, engine.device.device, engine.draw_image_descriptors)
+	}
 
 	engine.resize_requested = false
 

@@ -45,7 +45,7 @@ loadGltfMeshes :: proc(
 	for mesh in data.meshes {
 		newMesh: MeshAsset
 		indices: [dynamic]u32
-		vertices: [dynamic]Vertex
+		vertices: [dynamic]ModelVertex
 
 		newMesh.name = strings.clone_from_cstring_bounded(mesh.name, 1024)
 
@@ -81,7 +81,7 @@ loadGltfMeshes :: proc(
 				resize(&vertices, cast(uint)vertices_len + posAttrib.data.count)
 
 				for i: uint = 0; i < posAttrib.data.count; i += 1 {
-					newvtx: Vertex
+					newvtx: ModelVertex
 					fmt.assertf(
 						cast(bool)cgltf.accessor_read_float(
 							posAttrib.data,

@@ -7,6 +7,7 @@ import "core:log"
 import "core:math"
 import "core:math/linalg"
 import "core:os"
+import "core:slice"
 import vk "vendor:vulkan"
 
 import "core:mem"
@@ -138,4 +139,22 @@ matrix4_perspective_reverse_z_infinite_f32 :: proc(
 	}
 
 	return m
+}
+
+assert_eq :: proc(left: $T, right: T) {
+	if left != right {
+		log.panicf("%v != %v", left, right)
+	}
+}
+
+dupe :: proc(
+	input: $T/[]$E,
+	allocator := context.allocator,
+) -> (
+	res: T,
+	err: mem.Allocator_Error,
+) #optional_allocator_error {
+	out := make(T, len(input)) or_return
+	mem.copy(raw_data(out), raw_data(input), size_of(E) * len(input))
+	return out, nil
 }
