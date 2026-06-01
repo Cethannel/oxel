@@ -2084,6 +2084,7 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	atlas_builder: AtlasBuilder
 	atlas_builder_init(&atlas_builder)
+
 	for &block in engine.blocks {
 		block.vtable.register_textures(&block, engine, &atlas_builder)
 	}
@@ -2103,6 +2104,8 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	model_vertices, model_lookup := model_builder_build(&model_builder)
 
+	assert(len(model_vertices) > 0)
+
 	indices := make([]u32, len(baseIndices) * len(engine.texture_atlas.texture_map))
 	defer delete(indices)
 
@@ -2120,24 +2123,6 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		}
 		max_index = local_max + 1
 	}
-
-	model_buffer := make([]ModelVertex, len(modelVertices) * len(engine.texture_atlas.texture_map))
-	defer delete(model_buffer)
-	for i in 0 ..< len(engine.texture_atlas.texture_map) {
-		model := modelVertices
-		for &vertex in model {
-			y_offset := (1.0 / cast(f32)len(engine.texture_atlas.texture_map))
-			vertex.uv_x *= 1.0
-			vertex.uv_y *= y_offset
-			vertex.uv_y += y_offset * cast(f32)i
-		}
-		copy(model_buffer[i * len(model):][:len(model)], model[:])
-	}
-
-	log.infof("Model buffer: %v", typeid_of(type_of(model_buffer)))
-	log.infof("Model buffer: %v", typeid_of(type_of(model_vertices[:])))
-
-	assert(type_of(model_buffer) == type_of(model_vertices[:]))
 
 	chunk_vertices := make(
 		[]ChunkVertex,

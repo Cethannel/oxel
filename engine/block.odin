@@ -315,16 +315,25 @@ create_cube :: proc(
 
 		cube_data := cast(^CubeData)block.userdata
 
-		_, has := model_builder.models["cube"]
-		if !has {return}
 
 		model: Model
 
 		append(&model.vertices, ..modelVertices[:])
 
+		i := engine.texture_atlas.texture_map[cube_data.name]
+
+		for &vertex in model.vertices {
+			y_offset := (1.0 / cast(f32)len(engine.texture_atlas.texture_map))
+			vertex.uv_x *= 1.0
+			vertex.uv_y *= y_offset
+			vertex.uv_y += y_offset * cast(f32)i
+		}
+
 		name_buffer: [1024]u8
 
 		name := fmt.bprintf(name_buffer[:], "cube/%s", cube_data.name)
+
+		log.infof("Registering block: %s", name)
 
 		model_builder_register_model(model_builder, name, model)
 	}
