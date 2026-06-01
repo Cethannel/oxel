@@ -18,6 +18,11 @@ Atlas :: struct {
 	image:        AllocatedImage,
 }
 
+atlas_get_texture_offset :: proc(atlas: ^Atlas, texture_name: string) -> (offset: u32, ok: bool) {
+	offset, ok = atlas.texture_map[texture_name]
+	return
+}
+
 atlas_builder_init :: proc(ab: ^AtlasBuilder, allocator := context.allocator) {
 	ab.textures = make(map[string]string)
 }
@@ -61,17 +66,37 @@ atlas_builder_build :: proc(
 	err: image.Error
 	vk_err: vk.Result
 	arena: mem.Dynamic_Arena
-	data := make([]u32, ab.max_texture_size * ab.max_texture_size * cast(u32)len(ab.textures))
-	defer delete(data, allocator = allocator)
-	atlas.texture_map = make(map[string]u32, len(ab.textures))
-	defer if err != nil || vk_err != .SUCCESS {delete(atlas.texture_map)}
-	mem.dynamic_arena_init(&arena, allocator, allocator)
-	defer mem.dynamic_arena_free_all(&arena)
-	context.allocator = mem.dynamic_arena_allocator(&arena)
 
 	texture_len := ab.max_texture_size * ab.max_texture_size
 
-	i: u32 = 0
+	data := make([]u32, texture_len * cast(u32)(len(ab.textures) + 1))
+	defer delete(data, allocator = allocator)
+
+	atlas.texture_map = make(map[string]u32, len(ab.textures))
+	defer if err != nil || vk_err != .SUCCESS {delete(atlas.texture_map)}
+
+	mem.dynamic_arena_init(&arena, allocator, allocator)
+	defer mem.dynamic_arena_free_all(&arena)
+
+	context.allocator = mem.dynamic_arena_allocator(&arena)
+
+	CHECKER_DARK: u32 : 0xFF000000 // black
+	CHECKER_LIGHT: u32 : 0xFFC71585 // medium violet red / pink
+
+	half := ab.max_texture_size / 2
+	for x in 0 ..< ab.max_texture_size {
+		for y in 0 ..< ab.max_texture_size {
+			color: u32 = CHECKER_DARK
+			if (x < half && y < half) || (x >= half && y >= half) {
+				color = CHECKER_LIGHT
+			}
+			data[x + y * ab.max_texture_size] = color
+		}
+	}
+
+	atlas.texture_map["null"] = 0
+
+	i: u32 = 1
 	for k, v in ab.textures {
 		defer i += 1
 

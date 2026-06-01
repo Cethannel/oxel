@@ -9,6 +9,7 @@ import "core:log"
 import "core:math/linalg"
 import "core:mem"
 import "core:odin/tokenizer"
+import "core:unicode/utf16"
 import sdl2 "vendor:sdl2"
 import vk "vendor:vulkan"
 
@@ -53,9 +54,12 @@ AllocatedBuffer :: struct {
 	info:       vma.Allocation_Info,
 }
 
+ModelIndex :: u32
+PackedPos :: u16
+
 ChunkVertex :: struct {
-	model_index: u32,
-	packed_pos:  u16,
+	model_index: ModelIndex,
+	packed_pos:  PackedPos,
 }
 
 ModelVertex :: struct {
@@ -187,6 +191,7 @@ init :: proc() -> VulkanEngine {
 		stop_rendering = false,
 		window         = nil,
 		is_initialized = false,
+		ctx            = context,
 	}
 
 	assert(sdl2.Init(sdl2.InitFlags{.VIDEO}) == 0, "Failed to initalize SDL")
@@ -2055,32 +2060,48 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		{.SAMPLED},
 	) or_return
 
-	atlas_builder: AtlasBuilder
-	atlas_builder_init(&atlas_builder)
-	atlas_builder_register_texture(
-		&atlas_builder,
+	engine.blocks = make([dynamic]Block)
+	engine.blocks_map = make(map[string]BlockIdx)
+
+	register_cube(
+		engine,
 		"stone",
 		"assets/untrached/Faithful/assets/minecraft/textures/blocks/stone.png",
 		32,
 	)
-	atlas_builder_register_texture(
-		&atlas_builder,
+	register_cube(
+		engine,
 		"dirt",
 		"assets/untrached/Faithful/assets/minecraft/textures/blocks/dirt.png",
 		32,
 	)
-	atlas_builder_register_texture(
-		&atlas_builder,
+	register_cube(
+		engine,
 		"planks_oak",
 		"assets/untrached/Faithful/assets/minecraft/textures/blocks/planks_oak.png",
 		32,
 	)
+
+	atlas_builder: AtlasBuilder
+	atlas_builder_init(&atlas_builder)
+	for &block in engine.blocks {
+		block.vtable.register_textures(&block, engine, &atlas_builder)
+	}
 	engine.texture_atlas, ok = atlas_builder_build(&atlas_builder, engine)
 	assert(ok)
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		atlas_destroy(&engine.texture_atlas, engine)
 	})
+
+	model_builder: ModelBuilder
+	model_builder_init(&model_builder)
+
+	for &block in engine.blocks {
+		block.vtable.register_model(&block, engine, &model_builder)
+	}
+
+	model_vertices, model_lookup := model_builder_build(&model_builder)
 
 	indices := make([]u32, len(baseIndices) * len(engine.texture_atlas.texture_map))
 	defer delete(indices)
@@ -2113,6 +2134,11 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		copy(model_buffer[i * len(model):][:len(model)], model[:])
 	}
 
+	log.infof("Model buffer: %v", typeid_of(type_of(model_buffer)))
+	log.infof("Model buffer: %v", typeid_of(type_of(model_vertices[:])))
+
+	assert(type_of(model_buffer) == type_of(model_vertices[:]))
+
 	chunk_vertices := make(
 		[]ChunkVertex,
 		len(baseChunkVertices) * len(engine.texture_atlas.texture_map),
@@ -2141,7 +2167,7 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		buffer_create_upload_info(
 			&engine.model_buffer,
 			&engine.model_buffer_address,
-			model_buffer,
+			model_vertices[:],
 			.SSBO,
 		),
 		buffer_create_upload_info(&engine.block_index_buffer, nil, indices[:], .Index),

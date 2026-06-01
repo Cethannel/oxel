@@ -1,6 +1,10 @@
 package engine
 
 import "base:runtime"
+import "core:fmt"
+import "core:io"
+import "core:log"
+import "core:strings"
 // packed_pos = (x & 0xF) | ((y & 0xFF) << 4) | ((z & 0xF) << 12)
 // model_index = vertex index into baseVertices (for UV/normal/color lookup)
 baseChunkVertices := [?]ChunkVertex {
@@ -250,14 +254,88 @@ baseIndices := [?]u32 {
 BlockIdx :: distinct u32
 
 BlockVtable :: struct {
-	gen_model_vertices: ^proc "c" (userdata: rawptr, engine: ^VulkanEngine),
-	gen_vertices:       ^proc "c" (userdata: rawptr, engine: ^VulkanEngine),
+	register_textures:
+	proc "c" (block: ^Block, engine: ^VulkanEngine, atlas_builder: ^AtlasBuilder),
+	register_model:   
+	proc "c" (block: ^Block, engine: ^VulkanEngine, model_builder: ^ModelBuilder),
+	deinit:           
+	proc "c" (block: ^Block, engine: ^VulkanEngine),
 }
 
 @(tag = "export")
 Block :: struct {
 	userdata: rawptr,
 	vtable:   BlockVtable,
+}
+
+CubeData :: struct {
+	name:         string,
+	path:         string,
+	texture_size: u32,
+}
+
+register_cube :: proc(engine: ^VulkanEngine, name: string, texture: string, texture_size: u32) {
+	cube := create_cube(engine, name, texture, texture_size)
+	idx := len(engine.blocks)
+	append(&engine.blocks, cube)
+	engine.blocks_map[name] = cast(BlockIdx)idx
+}
+
+create_cube :: proc(
+	engine: ^VulkanEngine,
+	name: string,
+	texture: string,
+	texture_size: u32,
+) -> Block {
+	block: Block
+
+	data := new(CubeData)
+	data.path = texture
+	data.name = name
+	data.texture_size = texture_size
+
+	block.userdata = data
+
+	block.vtable.register_textures =
+	proc "c" (block: ^Block, engine: ^VulkanEngine, atlas_builder: ^AtlasBuilder) {
+		context = engine.ctx
+		cube := cast(^CubeData)block.userdata
+
+		log.infof("Registering block(%s) texture: %s", cube.name, cube.path)
+
+		assert(
+			atlas_builder_register_texture(atlas_builder, cube.name, cube.path, cube.texture_size),
+			"Failed to register texture",
+		)
+	}
+
+	block.vtable.register_model =
+	proc "c" (block: ^Block, engine: ^VulkanEngine, model_builder: ^ModelBuilder) {
+		context = engine.ctx
+
+		cube_data := cast(^CubeData)block.userdata
+
+		_, has := model_builder.models["cube"]
+		if !has {return}
+
+		model: Model
+
+		append(&model.vertices, ..modelVertices[:])
+
+		name_buffer: [1024]u8
+
+		name := fmt.bprintf(name_buffer[:], "cube/%s", cube_data.name)
+
+		model_builder_register_model(model_builder, name, model)
+	}
+
+	block.vtable.deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {
+		context = engine.ctx
+		cube := cast(^CubeData)block.userdata
+		free(cube)
+	}
+
+	return block
 }
 
 @(private = "file")
@@ -289,8 +367,12 @@ ModelVertexBuilder :: struct {
 
 @(private = "file")
 @(export, link_name = "model_vertex_builder_init")
-model_vertex_builder_init_c :: proc "c" (engine: ^VulkanEngine) {
+model_vertex_builder_init_c :: proc "c" (engine: ^VulkanEngine, mvb: ^ModelVertexBuilder) {
+	context = engine.ctx
+	model_vertex_builder_init(engine, mvb)
 }
 
-model_vertex_builder_init :: proc(engine: ^VulkanEngine) {
+model_vertex_builder_init :: proc(engine: ^VulkanEngine, mvb: ^ModelVertexBuilder) {
+	mvb.allocator = context.allocator
+	mvb.vertices = make([dynamic]ModelVertex)
 }
