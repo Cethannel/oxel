@@ -29,7 +29,7 @@ local function hasCommand(cmd)
 end
 
 local function getOsAndArchitecture()
-	local arch = _TARGET_ARCH or os.hostarch or "x86_64" -- fallback chain
+	local arch = "x86_64" -- fallback chain
 	return os.target(), arch:lower()
 end
 

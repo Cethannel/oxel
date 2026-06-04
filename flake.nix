@@ -27,6 +27,7 @@
         nativeBuildInputs = with pkgs; [
           odin
           autoPatchelfHook
+	  premake5
         ];
 
         buildInputs = runtimeLibs ++ (with pkgs; [
@@ -52,6 +53,7 @@
           vulkan-tools
           vulkan-validation-layers
           glslang
+	  premake5
         ];
 
         buildInputs = runtimeLibs ++ (with pkgs; [
