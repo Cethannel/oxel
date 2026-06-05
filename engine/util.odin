@@ -26,7 +26,7 @@ load_shader_module :: proc(
 ) {
 	log.info("Loading shader: %s", filePath)
 
-	file: os.Handle
+	file: ^os.File
 	file, err = os.open(filePath)
 	if err != nil {
 		fmt.panicf("Failed to open shader: %s\n", filePath)
@@ -39,7 +39,7 @@ load_shader_module :: proc(
 	defer delete(buffer)
 	resize(&buffer, file_size / size_of(u32))
 
-	os.seek(file, 0, 0) or_return
+	os.seek(file, 0, .Start) or_return
 
 	os.read(file, mem.slice_to_bytes(buffer[:]))
 
