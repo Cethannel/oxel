@@ -1,11 +1,8 @@
 build:
 	odin build . -debug
 
-patch: build
-	patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 ./oxel
-
-run: patch
-	./oxel
+run: build
+	LD_LIBRARY_PATH="/lib64:${LD_LIBRARY_PATH:-}" ./oxel
 
 shaders:
 	cd shaders && ./compile.sh

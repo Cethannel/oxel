@@ -15,7 +15,8 @@
 
       runtimeLibs = with pkgs; [
         vulkan-loader
-        SDL3
+        SDL2
+        sdl3
         stdenv.cc.cc.lib
         libcxx
         libGL
@@ -39,7 +40,8 @@
 
         buildInputs = runtimeLibs ++ (with pkgs; [
           vulkan-headers
-          SDL3.dev
+          SDL2.dev
+          sdl3.dev
           xorg.libX11
           xorg.libXrandr
           xorg.libXinerama
