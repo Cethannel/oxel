@@ -4,7 +4,6 @@ import "base:runtime"
 import "core:c"
 import "core:flags"
 import "core:image"
-import "core:image/png"
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
@@ -490,6 +489,8 @@ cleanup :: proc(engine: ^VulkanEngine) {
 	#reverse for func in engine.deinitFuncs {
 		func(engine)
 	}
+
+	delete(engine.deinitFuncs)
 }
 
 init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
@@ -549,6 +550,10 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	vkb.physical_device_selector_set_surface(selector, engine.surface)
 
 	physical_device := vkb.physical_device_selector_select(selector) or_return
+	append(
+		&engine.deinitFuncs,
+		proc(engine: ^VulkanEngine) {vkb.destroy_physical_device(engine.device.physical_device)},
+	)
 
 	assert(vkb.physical_device_enable_extension_features_if_present(physical_device, features12))
 	assert(vkb.physical_device_enable_extension_features_if_present(physical_device, features11))
@@ -724,10 +729,10 @@ create_swapchain :: proc(engine: ^VulkanEngine, width: u32, height: u32) -> vkb.
 }
 
 destroy_swapchain :: proc(engine: ^VulkanEngine) {
-	vkb.destroy_swapchain(engine.swapchain)
-
 	vkb.swapchain_destroy_image_views(engine.swapchain, engine.swapchain_image_views)
 	delete(engine.swapchain_image_views)
+	delete(engine.swapchain_images)
+	vkb.destroy_swapchain(engine.swapchain)
 }
 
 get_current_frame :: proc(engine: ^VulkanEngine) -> ^FrameData {
@@ -1160,6 +1165,10 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		sizes[:],
 	)
 
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		descriptor_allocator_growable_deinit(&engine.global_descriptor_allocator)
+	})
+
 	{
 		builder := DescriptorLayoutBuilder{}
 		descriptor_builder_add_binding(&builder, 0, .STORAGE_IMAGE)
@@ -1240,6 +1249,8 @@ init_descriptors :: proc(engine: ^VulkanEngine) -> vkb.Error {
 				&engine.frames[i].frame_descriptors,
 				engine.device.device,
 			)
+
+			descriptor_allocator_growable_deinit(&engine.frames[i].frame_descriptors)
 		}
 	})
 
@@ -1360,6 +1371,8 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 		for effect in engine.backgroundEffects {
 			vk.DestroyPipeline(engine.device.device, effect.pipeline, nil)
 		}
+
+		delete(engine.backgroundEffects)
 	})
 
 	return nil
@@ -1973,6 +1986,7 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	})
 
 	pipelineBuilder: PipelineBuilder
+	defer pipeline_builder_deinit(&pipelineBuilder)
 	pipeline_builder_clear(&pipelineBuilder)
 
 	//use the triangle layout we created
@@ -2058,6 +2072,11 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	engine.blocks = make([dynamic]Block)
 	engine.blocks_map = make(map[string]BlockIdx)
 
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		delete(engine.blocks)
+		delete(engine.blocks_map)
+	})
+
 	register_cube(
 		engine,
 		"stone",
@@ -2076,6 +2095,12 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		"assets/untrached/Faithful/assets/minecraft/textures/blocks/planks_oak.png",
 		32,
 	)
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		for &block in engine.blocks {
+			block.vtable.deinit(&block, engine)
+		}
+	})
 
 	atlas_builder: AtlasBuilder
 	atlas_builder_init(&atlas_builder)
@@ -2097,7 +2122,8 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		block.vtable.register_model(&block, engine, &model_builder)
 	}
 
-	model_vertices, model_lookup := model_builder_build(&model_builder)
+	model_vertices := model_builder_build(&model_builder)
+	defer delete(model_vertices)
 
 	assert(len(model_vertices) > 0)
 
@@ -2416,7 +2442,7 @@ load_image_rgba :: proc(
 	if err != nil {
 		return nil, 0, 0, false
 	}
-	defer image.destroy(img)
+	defer image.destroy(img, allocator)
 
 	w = img.width
 	h = img.height

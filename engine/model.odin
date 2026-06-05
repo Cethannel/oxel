@@ -12,26 +12,17 @@ model_builder_register_model :: proc(model_builder: ^ModelBuilder, name: string,
 	model_builder.models[name] = model
 }
 
-model_builder_build :: proc(
-	model_builder: ^ModelBuilder,
-) -> (
-	vertices: [dynamic]ModelVertex,
-	model_lookup: ModelLookup,
-) {
+model_builder_build :: proc(model_builder: ^ModelBuilder) -> [dynamic]ModelVertex {
 	count: int = 0
 
 	for _, model in model_builder.models {
 		count += len(model.vertices)
 	}
 
-	vertices = make_dynamic_array_len_cap([dynamic]ModelVertex, 0, count)
-
-	model_lookup.offsets = make_map_cap(map[string]u32, len(model_builder.models))
+	vertices := make_dynamic_array_len_cap([dynamic]ModelVertex, 0, count)
 
 	for name, model in model_builder.models {
 		off: u32 = cast(u32)len(vertices)
-
-		model_lookup.offsets[name] = off
 
 		append(&vertices, ..model.vertices[:])
 
@@ -40,7 +31,7 @@ model_builder_build :: proc(
 
 	delete(model_builder.models)
 
-	return
+	return vertices
 }
 
 Model :: struct {

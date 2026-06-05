@@ -15,6 +15,10 @@ PipelineBuilder :: struct {
 	initialized:           bool,
 }
 
+pipeline_builder_deinit :: proc(pb: ^PipelineBuilder) {
+	delete(pb.shaderStages)
+}
+
 pipeline_builder_clear :: proc(pb: ^PipelineBuilder) {
 	pb.inputAssembly = vk.PipelineInputAssemblyStateCreateInfo {
 		sType = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -40,7 +44,7 @@ pipeline_builder_clear :: proc(pb: ^PipelineBuilder) {
 		sType = .PIPELINE_RENDERING_CREATE_INFO,
 	}
 
-	clear_dynamic_array(&pb.shaderStages)
+	clear(&pb.shaderStages)
 
 	pb.initialized = true
 }

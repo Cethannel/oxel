@@ -1,6 +1,7 @@
 package engine
 
 import "core:image"
+import "core:image/png"
 import "core:log"
 import "core:math"
 import "core:mem"
@@ -102,11 +103,11 @@ atlas_builder_build :: proc(
 
 		img: ^image.Image
 		img, err = image.load_from_file(v, {.alpha_add_if_missing}, allocator)
-		defer image.destroy(img)
 		if err != nil {
 			log.errorf("Failed to load image(%s): %e", v, err)
 			return
 		}
+		defer image.destroy(img, allocator)
 		if img.width != img.height {
 			log.errorf("Missmatch in width and height for: %s", v)
 			log.errorf("Width: %d\nHeight:%d", img.width, img.height)

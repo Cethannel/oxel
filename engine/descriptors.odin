@@ -36,6 +36,7 @@ descriptor_builder_build :: proc(
 	set: vk.DescriptorSetLayout,
 	err: vkb.Error,
 ) {
+	defer delete(self.bindings)
 	for &b in self.bindings {
 		b.stageFlags |= shaderStages
 	}
@@ -148,6 +149,12 @@ descriptor_allocator_growable_init :: proc(
 	append(&self.readyPools, newPool)
 }
 
+descriptor_allocator_growable_deinit :: proc(self: ^DescriptorAllocatorGrowable) {
+	delete(self.ratios)
+	delete(self.fullPools)
+	delete(self.readyPools)
+}
+
 descriptor_allocator_growable_clear_pools :: proc(
 	self: ^DescriptorAllocatorGrowable,
 	device: vk.Device,
@@ -247,6 +254,7 @@ descriptor_allocator_growable_create_pool :: proc(
 	poolRatios: []PoolSizeRatio,
 ) -> vk.DescriptorPool {
 	poolSizes: [dynamic]vk.DescriptorPoolSize
+	defer delete(poolSizes)
 	for ratio in poolRatios {
 		append(
 			&poolSizes,
@@ -330,9 +338,9 @@ descriptor_writer_write_buffer :: proc(
 }
 
 descriptor_writer_clear :: proc(dw: ^DescriptorWriter) {
-	clear(&dw.imageInfos)
-	clear(&dw.writes)
-	clear(&dw.bufferInfos)
+	delete(dw.imageInfos)
+	delete(dw.writes)
+	delete(dw.bufferInfos)
 }
 descriptor_writer_update_set :: proc(
 	dw: ^DescriptorWriter,
@@ -345,4 +353,6 @@ descriptor_writer_update_set :: proc(
 	}
 
 	vk.UpdateDescriptorSets(device, cast(u32)len(dw.writes), raw_data(dw.writes), 0, nil)
+
+	descriptor_writer_clear(dw)
 }
