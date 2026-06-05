@@ -3,49 +3,25 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixgl.url = "github:nix-community/nixGL";
+    nixgl.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs =
-    { self, nixpkgs }:
+  outputs = { self, nixpkgs, nixgl }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+      nixGL = nixgl.packages.${system};
 
       runtimeLibs = with pkgs; [
         vulkan-loader
         SDL2
         stdenv.cc.cc.lib
-				libcxx
+        libcxx
+        libGL
       ];
     in
     {
-      packages.${system}.default = pkgs.stdenv.mkDerivation {
-        pname = "vulkan-guide";
-        version = "0.1.0";
-        src = ./.;
-
-        nativeBuildInputs = with pkgs; [
-          odin
-          autoPatchelfHook
-	  premake5
-        ];
-
-        buildInputs = runtimeLibs ++ (with pkgs; [
-          vulkan-headers
-          vulkan-validation-layers
-        ]);
-
-        buildPhase = ''
-          odin build . -out:vulkan_guide
-        '';
-
-        installPhase = ''
-          mkdir -p $out/bin $out/share/vulkan-guide/shaders
-          cp vulkan_guide $out/bin/
-          cp shaders/*.spv $out/share/vulkan-guide/shaders/
-        '';
-      };
-
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
           odin
@@ -53,17 +29,32 @@
           vulkan-tools
           vulkan-validation-layers
           glslang
-	  premake5
+          premake5
+          bash
+          # Add the right nixVulkan wrapper for your GPU
+          nixGL.nixVulkanIntel   # Intel / Mesa (most common)
+          # nixGL.nixVulkanMesa  # alternative broad Mesa
+          # nixGL.auto.nixVulkanNvidia or nixGL.nixVulkanNvidia if you have NVIDIA
         ];
 
         buildInputs = runtimeLibs ++ (with pkgs; [
           vulkan-headers
           SDL2.dev
+          xorg.libX11
+          xorg.libXrandr
+          xorg.libXinerama
+          xorg.libXcursor
+          xorg.libXi
+          wayland
+          libxkbcommon
         ]);
 
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
 
         VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+
+        # Optional: force X11 if you have Wayland issues
+        # SDL_VIDEODRIVER = "x11";
       };
     };
 }

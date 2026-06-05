@@ -208,7 +208,7 @@ init :: proc() -> VulkanEngine {
 
 	err := init_vulkan(&engine)
 	if err != nil {
-		fmt.panicf("Failed to initalize vulkan: %s", err)
+		fmt.panicf("Failed to initalize vulkan: %v", err)
 	}
 
 	assert(init_swapchain(&engine) == nil, "Failed to initalize swapchain")
@@ -514,36 +514,44 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		vk.DestroySurfaceKHR(engine.instance.instance, engine.surface, nil)
 	})
 
+	// 1. Create the structs with only what you really need
 	features13 := vk.PhysicalDeviceVulkan13Features {
 		sType            = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-		dynamicRendering = true,
-		synchronization2 = true,
+		dynamicRendering = true, // very useful
+		synchronization2 = true, // very useful
 	}
 
-	features12: vk.PhysicalDeviceVulkan12Features
-	features12.sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
-	features12.bufferDeviceAddress = true
-	features12.descriptorIndexing = true
+	features12: vk.PhysicalDeviceVulkan12Features = {
+		sType               = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		// Only enable what you actually use. Remove these for now:
+		bufferDeviceAddress = true,
+		descriptorIndexing  = true,
+	}
 
-	features11: vk.PhysicalDeviceVulkan11Features
-	features11.sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES
-	features11.storageBuffer16BitAccess = true
+	features11: vk.PhysicalDeviceVulkan11Features = {
+		sType                    = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		storageBuffer16BitAccess = true, // comment out if not needed
+	}
 
-
-	features: vk.PhysicalDeviceFeatures
-	features.shaderInt16 = true
+	features: vk.PhysicalDeviceFeatures = {
+		shaderInt16 = true, // keep only if your shaders actually use it
+	}
 
 	selector := vkb.create_physical_device_selector_with_surface(engine.instance, engine.surface)
 	defer vkb.destroy_physical_device_selector(selector)
 
-	vkb.physical_device_selector_set_minimum_version_values(selector, 1, 3)
+	vkb.physical_device_selector_set_minimum_version_values(selector, 1, 2)
 	vkb.physical_device_selector_set_required_features(selector, features)
-	vkb.physical_device_selector_set_required_features_11(selector, features11)
-	vkb.physical_device_selector_set_required_features_12(selector, features12)
+	//vkb.physical_device_selector_set_required_features_11(selector, features11)
+	//vkb.physical_device_selector_set_required_features_12(selector, features12)
 	vkb.physical_device_selector_set_required_features_13(selector, features13)
+	vkb.physical_device_selector_prefer_gpu_device_type(selector)
 	vkb.physical_device_selector_set_surface(selector, engine.surface)
 
 	physical_device := vkb.physical_device_selector_select(selector) or_return
+
+	assert(vkb.physical_device_enable_extension_features_if_present(physical_device, features12))
+	assert(vkb.physical_device_enable_extension_features_if_present(physical_device, features11))
 
 	//defer vkb.destroy_physical_device(physical_device)
 	fmt.printfln("Selected GPU: %s", physical_device.properties.deviceName)
@@ -675,11 +683,6 @@ init_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 			engine.depth_image.allocation,
 		)
 	})
-
-	//add to deletion queues
-	//_mainDeletionQueue.push_function([=]() {
-	//	vkDestroyImageView(_device, _drawImage.imageView, nullptr);
-	//	vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
 
 	create_swapchain(engine, engine.window_extent.width, engine.window_extent.height) or_return
 
@@ -2006,14 +2009,6 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	ok: bool
-	engine.testMeshes, ok = loadGltfMeshes(engine, "assets/basicmesh.glb")
-	fmt.assertf(ok, "Failed to load meshes: %s", "assets/basicmesh.glb")
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		for mesh in engine.testMeshes {
-			destroy_buffer(engine, mesh.meshBuffers.vertexBuffer)
-			destroy_buffer(engine, mesh.meshBuffers.indexBuffer)
-		}
-	})
 
 
 	//3 default textures, white, grey, black. 1 pixel each

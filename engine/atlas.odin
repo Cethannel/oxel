@@ -101,7 +101,7 @@ atlas_builder_build :: proc(
 		defer i += 1
 
 		img: ^image.Image
-		img, err = image.load_from_file(v, {.alpha_add_if_missing})
+		img, err = image.load_from_file(v, {.alpha_add_if_missing}, allocator)
 		defer image.destroy(img)
 		if err != nil {
 			log.errorf("Failed to load image(%s): %e", v, err)
