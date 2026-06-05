@@ -25,7 +25,7 @@ import imgui "../vendor/gitlab.com/L-4/odin-imgui"
 import imgui_sdl2 "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_sdl2"
 import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
 
-print_resize :: false
+print_resize :: true
 
 DeinitFunc :: proc(engine: ^VulkanEngine)
 FrameDeinitFunc :: proc(engine: ^VulkanEngine, frame_data: ^FrameData)
@@ -239,9 +239,7 @@ run :: proc(engine: ^VulkanEngine) {
 
 	for (!quit) {
 		for (sdl2.PollEvent(&e)) {
-			if imgui_sdl2.ProcessEvent(&e) {
-				continue
-			}
+			imgui_sdl2.ProcessEvent(&e)
 
 			if e.type == .QUIT {
 				quit = true
@@ -253,6 +251,8 @@ run :: proc(engine: ^VulkanEngine) {
 					engine.stop_rendering = true
 				case .RESTORED:
 					engine.stop_rendering = false
+				case .RESIZED, .SIZE_CHANGED:
+					engine.resize_requested = true
 				}
 			}
 		}
