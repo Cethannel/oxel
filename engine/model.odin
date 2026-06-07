@@ -12,18 +12,25 @@ model_builder_register_model :: proc(model_builder: ^ModelBuilder, name: string,
 	model_builder.models[name] = model
 }
 
-model_builder_build :: proc(model_builder: ^ModelBuilder) -> [dynamic]ModelVertex {
+model_builder_build :: proc(
+	model_builder: ^ModelBuilder,
+) -> (
+	vertices: [dynamic]ModelVertex,
+	starts: map[string]ModelIndex,
+) {
 	count: int = 0
 
 	for _, model in model_builder.models {
 		count += len(model.vertices)
 	}
 
-	vertices := make_dynamic_array_len_cap([dynamic]ModelVertex, 0, count)
+	vertices = make_dynamic_array_len_cap([dynamic]ModelVertex, 0, count)
+	starts = make_map_cap(map[string]ModelIndex, count)
 
 	for name, model in model_builder.models {
 		off: u32 = cast(u32)len(vertices)
 
+		starts[name] = cast(ModelIndex)len(vertices)
 		append(&vertices, ..model.vertices[:])
 
 		delete(model.vertices)
@@ -31,7 +38,7 @@ model_builder_build :: proc(model_builder: ^ModelBuilder) -> [dynamic]ModelVerte
 
 	delete(model_builder.models)
 
-	return vertices
+	return
 }
 
 Model :: struct {

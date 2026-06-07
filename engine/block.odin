@@ -254,23 +254,19 @@ baseIndices := [?]u32 {
 BlockIdx :: distinct u32
 
 BlockVtable :: struct {
-	register_textures: #type proc "c" (
-		block: ^Block,
-		engine: ^VulkanEngine,
-		atlas_builder: ^AtlasBuilder,
-	),
-	register_model:    #type proc "c" (
-		block: ^Block,
-		engine: ^VulkanEngine,
-		model_builder: ^ModelBuilder,
-	),
-	populate_chunk:    #type proc "c" (
+	register_textures:
+	#type proc "c" (block: ^Block, engine: ^VulkanEngine, atlas_builder: ^AtlasBuilder),
+	register_model:   
+	#type proc "c" (block: ^Block, engine: ^VulkanEngine, model_builder: ^ModelBuilder),
+	populate_chunk:   
+	#type proc "c" (
 		block: ^Block,
 		engine: ^VulkanEngine,
 		chunk_builder: ^ChunkBuilder,
 		in_chunk_position: [3]u32,
 	),
-	deinit:            #type proc "c" (block: ^Block, engine: ^VulkanEngine),
+	deinit:           
+	#type proc "c" (block: ^Block, engine: ^VulkanEngine),
 }
 
 @(tag = "export")
@@ -342,7 +338,7 @@ create_cube :: proc(
 
 		name_buffer: [1024]u8
 
-		name := fmt.bprintf(name_buffer[:], "cube/%s", cube_data.name)
+		name := fmt.aprintf("cube/%s", cube_data.name)
 
 		log.infof("Registering block: %s", name)
 
@@ -378,12 +374,16 @@ create_cube :: proc(
 
 		block := baseChunkVertices
 
+		name_buffer: [1024]u8
+
+		name := fmt.bprintf(name_buffer[:], "cube/%s", cube.name)
+
 		for &vertex in block {
 			vertex = make_chunk_vertex(
 				in_chunk_position.x,
 				in_chunk_position.y,
 				in_chunk_position.z,
-				vertex.model_index,
+				engine.model_index_map[name] + vertex.model_index,
 			)
 		}
 		chunk_builder_push_vertices(chunk_builder, block[:])

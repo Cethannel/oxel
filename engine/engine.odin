@@ -168,6 +168,7 @@ VulkanEngine :: struct {
 	// :blocks
 	blocks:                         [dynamic]Block,
 	blocks_map:                     map[string]BlockIdx,
+	model_index_map:                map[string]ModelIndex,
 
 	// 
 	texture_atlas:                  Atlas,
@@ -2119,13 +2120,21 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	model_builder_init(&model_builder)
 
 	for &block in engine.blocks {
-		todo: FixMe
-		block.model_index_start = len(model_builder.models)
 		block.vtable.register_model(&block, engine, &model_builder)
 	}
 
-	model_vertices := model_builder_build(&model_builder)
+	model_vertices, model_starts := model_builder_build(&model_builder)
 	defer delete(model_vertices)
+	engine.model_index_map = model_starts
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		delete(engine.model_index_map)
+	})
+
+	log.infof("Got index map:\n")
+
+	for name, value in model_starts {
+		log.infof("%s: %d\n", name, value)
+	}
 
 	assert(len(model_vertices) > 0)
 
