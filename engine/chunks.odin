@@ -77,3 +77,41 @@ chunk_pos_to_world_pos :: proc(chunk_pos: [2]i32) -> [3]f32 {
 	world_int: [3]i32 = {chunk_pos.x * 16, 0, chunk_pos.y * 16}
 	return linalg.array_cast(world_int, f32)
 }
+
+ChunkBuilder :: struct {
+	vertices:    [dynamic]ChunkVertex,
+	indices:     [dynamic]u32,
+	start_index: u32,
+}
+
+chunk_builder_clear :: proc(chunk_builder: ^ChunkBuilder) {
+	clear(&chunk_builder.vertices)
+	clear(&chunk_builder.indices)
+	chunk_builder.start_index = 0
+}
+
+chunk_builder_deinit :: proc(chunk_builder: ^ChunkBuilder) {
+	delete(chunk_builder.vertices)
+	delete(chunk_builder.indices)
+}
+
+chunk_builder_push_vertex :: proc(chunk_builder: ^ChunkBuilder, vertex: ChunkVertex) {
+	append(&chunk_builder.vertices, vertex)
+}
+
+chunk_builder_push_vertices :: proc(chunk_builder: ^ChunkBuilder, vertices: []ChunkVertex) {
+	append(&chunk_builder.vertices, ..vertices)
+}
+
+chunk_builder_push_index :: proc(self: ^ChunkBuilder, index: u32) {
+	self.start_index = max(self.start_index, index + 1)
+	append(&self.indices, index)
+}
+
+chunk_builder_push_indices :: proc(self: ^ChunkBuilder, indices: []u32) {
+	for index in indices {
+		self.start_index = max(self.start_index, index + 1)
+	}
+
+	append(&self.indices, ..indices)
+}

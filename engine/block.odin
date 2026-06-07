@@ -254,18 +254,30 @@ baseIndices := [?]u32 {
 BlockIdx :: distinct u32
 
 BlockVtable :: struct {
-	register_textures:
-	proc "c" (block: ^Block, engine: ^VulkanEngine, atlas_builder: ^AtlasBuilder),
-	register_model:   
-	proc "c" (block: ^Block, engine: ^VulkanEngine, model_builder: ^ModelBuilder),
-	deinit:           
-	proc "c" (block: ^Block, engine: ^VulkanEngine),
+	register_textures: #type proc "c" (
+		block: ^Block,
+		engine: ^VulkanEngine,
+		atlas_builder: ^AtlasBuilder,
+	),
+	register_model:    #type proc "c" (
+		block: ^Block,
+		engine: ^VulkanEngine,
+		model_builder: ^ModelBuilder,
+	),
+	populate_chunk:    #type proc "c" (
+		block: ^Block,
+		engine: ^VulkanEngine,
+		chunk_builder: ^ChunkBuilder,
+		in_chunk_position: [3]u32,
+	),
+	deinit:            #type proc "c" (block: ^Block, engine: ^VulkanEngine),
 }
 
 @(tag = "export")
 Block :: struct {
-	userdata: rawptr,
-	vtable:   BlockVtable,
+	userdata:          rawptr,
+	vtable:            BlockVtable,
+	model_index_start: ModelIndex,
 }
 
 CubeData :: struct {
@@ -315,7 +327,6 @@ create_cube :: proc(
 
 		cube_data := cast(^CubeData)block.userdata
 
-
 		model: Model
 
 		append(&model.vertices, ..modelVertices[:])
@@ -336,6 +347,46 @@ create_cube :: proc(
 		log.infof("Registering block: %s", name)
 
 		model_builder_register_model(model_builder, name, model)
+	}
+
+	block.vtable.populate_chunk =
+	proc "c" (
+		block: ^Block,
+		engine: ^VulkanEngine,
+		chunk_builder: ^ChunkBuilder,
+		in_chunk_position: [3]u32,
+	) {
+		context = engine.ctx
+
+		cube := cast(^CubeData)block.userdata
+
+		indices := make([]u32, len(baseIndices))
+		defer delete(indices)
+		max_index := chunk_builder.start_index
+		local_max := max_index
+		for face in 0 ..< 6 {
+			base := face * 6
+			offset: u32 = cast(u32)face * 4
+			for j in 0 ..< 6 {
+				index := baseIndices[base + j] + offset + max_index
+				indices[base + j] = index
+				local_max = max(index, local_max)
+			}
+		}
+
+		chunk_builder_push_indices(chunk_builder, indices[:])
+
+		block := baseChunkVertices
+
+		for &vertex in block {
+			vertex = make_chunk_vertex(
+				in_chunk_position.x,
+				in_chunk_position.y,
+				in_chunk_position.z,
+				vertex.model_index,
+			)
+		}
+		chunk_builder_push_vertices(chunk_builder, block[:])
 	}
 
 	block.vtable.deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {

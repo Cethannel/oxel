@@ -2119,6 +2119,8 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	model_builder_init(&model_builder)
 
 	for &block in engine.blocks {
+		todo: FixMe
+		block.model_index_start = len(model_builder.models)
 		block.vtable.register_model(&block, engine, &model_builder)
 	}
 
@@ -2127,47 +2129,57 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	assert(len(model_vertices) > 0)
 
-	indices := make([]u32, len(baseIndices) * len(engine.texture_atlas.texture_map))
-	defer delete(indices)
+	chunk_builder: ChunkBuilder
+	chunk_builder_clear(&chunk_builder)
+	defer chunk_builder_deinit(&chunk_builder)
 
-	max_index: u32 = 0
-	for tex_i in 0 ..< len(engine.texture_atlas.texture_map) {
-		local_max: u32 = max_index
-		for face in 0 ..< 6 {
-			base := face * 6
-			offset: u32 = cast(u32)face * 4
-			for j in 0 ..< 6 {
-				index := baseIndices[base + j] + offset + max_index
-				indices[tex_i * len(baseIndices) + base + j] = index
-				local_max = max(index, local_max)
-			}
-		}
-		max_index = local_max + 1
+	for &block, i in engine.blocks {
+		block.vtable.populate_chunk(&block, engine, &chunk_builder, {0, cast(u32)i, 0})
 	}
 
-	chunk_vertices := make(
-		[]ChunkVertex,
-		len(baseChunkVertices) * len(engine.texture_atlas.texture_map),
-	)
-	defer delete(chunk_vertices)
-	for i in 0 ..< len(engine.texture_atlas.texture_map) {
-		block := baseChunkVertices
-		for &vertex in block {
-			vertex = make_chunk_vertex(
-				0,
-				cast(u32)i,
-				0,
-				vertex.model_index + cast(u32)i * cast(u32)len(modelVertices),
-			)
+	if false {
+		indices := make([]u32, len(baseIndices) * len(engine.texture_atlas.texture_map))
+		defer delete(indices)
+
+		max_index: u32 = 0
+		for tex_i in 0 ..< len(engine.texture_atlas.texture_map) {
+			local_max: u32 = max_index
+			for face in 0 ..< 6 {
+				base := face * 6
+				offset: u32 = cast(u32)face * 4
+				for j in 0 ..< 6 {
+					index := baseIndices[base + j] + offset + max_index
+					indices[tex_i * len(baseIndices) + base + j] = index
+					local_max = max(index, local_max)
+				}
+			}
+			max_index = local_max + 1
 		}
-		copy(chunk_vertices[i * len(block):][:len(block)], block[:])
+
+		chunk_vertices := make(
+			[]ChunkVertex,
+			len(baseChunkVertices) * len(engine.texture_atlas.texture_map),
+		)
+		defer delete(chunk_vertices)
+		for i in 0 ..< len(engine.texture_atlas.texture_map) {
+			block := baseChunkVertices
+			for &vertex in block {
+				vertex = make_chunk_vertex(
+					0,
+					cast(u32)i,
+					0,
+					vertex.model_index + cast(u32)i * cast(u32)len(modelVertices),
+				)
+			}
+			copy(chunk_vertices[i * len(block):][:len(block)], block[:])
+		}
 	}
 
 	create_upload_infos := [?]BufferCreateUploadInfo {
 		buffer_create_upload_info(
 			&engine.block_vertex_buffer,
 			&engine.block_vertex_buffer_address,
-			chunk_vertices,
+			chunk_builder.vertices[:],
 			.SSBO,
 		),
 		buffer_create_upload_info(
@@ -2176,10 +2188,15 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 			model_vertices[:],
 			.SSBO,
 		),
-		buffer_create_upload_info(&engine.block_index_buffer, nil, indices[:], .Index),
+		buffer_create_upload_info(
+			&engine.block_index_buffer,
+			nil,
+			chunk_builder.indices[:],
+			.Index,
+		),
 	}
 	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
-	engine.block_index_len = cast(u32)len(indices)
+	engine.block_index_len = cast(u32)len(chunk_builder.indices)
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		destroy_buffer(engine, engine.block_vertex_buffer)
 		destroy_buffer(engine, engine.model_buffer)
