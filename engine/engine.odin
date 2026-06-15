@@ -1955,7 +1955,7 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	//filled triangles
 	pipeline_builder_set_polygon_mode(&pipelineBuilder, .FILL)
 	//no backface culling
-	pipeline_builder_set_cull_mode(&pipelineBuilder, {}, .CLOCKWISE)
+	pipeline_builder_set_cull_mode(&pipelineBuilder, {.BACK}, .CLOCKWISE)
 	//no multisampling
 	pipeline_builder_set_multisampling_none(&pipelineBuilder)
 	//no blending
@@ -2067,15 +2067,17 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	for x in 0 ..< 10 {
-		for z in 0 ..< 10 {
+	MAKE_SIZE :: 16
+	for x in 0 ..< MAKE_SIZE {
+		for z in 0 ..< MAKE_SIZE {
 			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
+			log.infof("Generating chunk: %v", pos)
 			engine.chunks[pos] = Chunk{}
 			chunk_gen(engine, &engine.chunks[pos], pos)
 			//chunk_gen_blocks(engine, &engine.chunks[pos])
 
 			engine.chunk_meshes[pos] = ChunkMesh{}
-			chunk_mesh_gen(&engine.chunk_meshes[pos], engine, &engine.chunks[pos], pos)
+			chunk_mesh_gen(&engine.chunk_meshes[pos], engine, &engine.chunks[pos], pos) or_return
 		}
 	}
 

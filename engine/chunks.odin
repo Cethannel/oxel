@@ -80,7 +80,7 @@ chunk_mesh_gen :: proc(
 	for block, idx in chunk.blocks {
 		pos := linalg.array_cast(chunk_calc_pos(idx), u32)
 		blk_data := &engine.blocks[block.block_id]
-		blk_data.vtable.populate_chunk(blk_data, engine, &chunk_builder, pos)
+		blk_data.vtable.populate_chunk(blk_data, engine, &chunk_builder, chunk, pos)
 	}
 
 	chunk_mesh^ = chunk_builder_build(&chunk_builder, engine) or_return

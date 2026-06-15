@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:io"
 import "core:log"
+import "core:math/linalg"
 import "core:strings"
 // packed_pos = (x & 0xF) | ((y & 0xFF) << 4) | ((z & 0xF) << 12)
 // model_index = vertex index into baseVertices (for UV/normal/color lookup)
@@ -38,6 +39,15 @@ baseChunkVertices := [?]ChunkVertex {
 	{packed_pos = 0, model_index = 21}, // (0,1,1)
 	{packed_pos = 0, model_index = 22}, // (1,1,1)
 	{packed_pos = 0, model_index = 23}, // (1,1,0)
+}
+
+Face :: enum {
+	NegZ = 0,
+	PosZ,
+	NegX,
+	PosX,
+	NegY,
+	PosY,
 }
 
 modelVertices := [?]ModelVertex {
@@ -263,6 +273,7 @@ BlockVtable :: struct {
 		block: ^Block,
 		engine: ^VulkanEngine,
 		chunk_builder: ^ChunkBuilder,
+		chunk: ^Chunk,
 		in_chunk_position: [3]u32,
 	),
 	deinit:           
@@ -293,6 +304,7 @@ Air :: Block {
 			block: ^Block,
 			engine: ^VulkanEngine,
 			chunk_builder: ^ChunkBuilder,
+			chunk: ^Chunk,
 			in_chunk_position: [3]u32,
 		) {},
 		deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {},
@@ -310,6 +322,51 @@ register_cube :: proc(engine: ^VulkanEngine, name: string, texture: string, text
 	idx := len(engine.blocks)
 	append(&engine.blocks, cube)
 	engine.blocks_map[name] = cast(BlockIdx)idx
+}
+
+get_neigbor_pos_in_chunk :: proc "contextless" (
+	chunk_pos: [3]u32,
+	face: Face,
+) -> (
+	pos: [3]int = {},
+	in_chunk: bool = true,
+) {
+	ipos := linalg.array_cast(chunk_pos, i64)
+	switch face {
+	case Face.NegZ:
+		ipos.z -= 1
+	case Face.PosZ:
+		ipos.z += 1
+	case Face.NegY:
+		ipos.y -= 1
+	case Face.PosY:
+		ipos.y += 1
+	case Face.NegX:
+		ipos.x -= 1
+	case Face.PosX:
+		ipos.x += 1
+	}
+
+	#unroll for coord, i in ipos {
+		if coord < 0 {
+			in_chunk = false
+			return
+		}
+
+		if i == 1 && coord >= CHUNK_HEIGHT {
+			in_chunk = false
+			return
+		}
+
+		if i != 1 && coord >= CHUNK_WIDTH {
+			in_chunk = false
+			return
+		}
+	}
+
+	pos = linalg.array_cast(ipos, int)
+
+	return
 }
 
 create_cube :: proc(
@@ -373,43 +430,54 @@ create_cube :: proc(
 		block: ^Block,
 		engine: ^VulkanEngine,
 		chunk_builder: ^ChunkBuilder,
+		chunk: ^Chunk,
 		in_chunk_position: [3]u32,
 	) {
 		context = engine.ctx
 
 		cube := cast(^CubeData)block.userdata
 
-		indices := make([]u32, len(baseIndices))
-		defer delete(indices)
-		max_index := chunk_builder.start_index
-		local_max := max_index
-		for face in 0 ..< 6 {
-			base := face * 6
-			offset: u32 = cast(u32)face * 4
-			for j in 0 ..< 6 {
-				index := baseIndices[base + j] + offset + max_index
-				indices[base + j] = index
-				local_max = max(index, local_max)
-			}
-		}
-
-		chunk_builder_push_indices(chunk_builder, indices[:])
-
-		block := baseChunkVertices
-
 		name_buffer: [1024]u8
 
 		name := fmt.bprintf(name_buffer[:], "cube/%s", cube.name)
 
-		for &vertex in block {
-			vertex = make_chunk_vertex(
-				in_chunk_position.x,
-				in_chunk_position.y,
-				in_chunk_position.z,
-				engine.model_index_map[name] + vertex.model_index,
-			)
+		vertices := make([dynamic]ChunkVertex, 0, len(baseChunkVertices))
+		defer delete(vertices)
+		indices := make([dynamic]u32, 0, len(baseIndices))
+		defer delete(indices)
+		max_index := chunk_builder.start_index
+		local_max := max_index
+
+		for face in 0 ..< 6 {
+			neighbor_pos, in_chunk := get_neigbor_pos_in_chunk(in_chunk_position, cast(Face)face)
+			if in_chunk {
+				neigbor := chunk.blocks[chunk_calc_index(neighbor_pos)]
+				if neigbor.block_id != 0 {
+					continue
+				}
+			}
+
+			base := face * 6
+			for j in 0 ..< 6 {
+				index := baseIndices[base + j] + cast(u32)len(vertices) + max_index
+				append(&indices, index)
+				local_max = max(index, local_max)
+			}
+
+			for j in 0 ..< 4 {
+				vertex := make_chunk_vertex(
+					in_chunk_position.x,
+					in_chunk_position.y,
+					in_chunk_position.z,
+					engine.model_index_map[name] + baseChunkVertices[face * 4 + j].model_index,
+				)
+
+				append(&vertices, vertex)
+			}
 		}
-		chunk_builder_push_vertices(chunk_builder, block[:])
+
+		chunk_builder_push_indices(chunk_builder, indices[:])
+		chunk_builder_push_vertices(chunk_builder, vertices[:])
 	}
 
 	block.vtable.deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {
