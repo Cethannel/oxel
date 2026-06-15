@@ -8,6 +8,7 @@ import "core:log"
 import "core:math/linalg"
 import "core:mem"
 import "core:odin/tokenizer"
+import "core:thread"
 import "core:unicode/utf16"
 import sdl2 "vendor:sdl2"
 import vk "vendor:vulkan"
@@ -1714,9 +1715,12 @@ create_and_upload_ssbo :: proc(
 	create_infos: []BufferCreateUploadInfo,
 ) -> vk.Result {
 	total_size: vk.DeviceSize = 0
-	for info in create_infos {
+	for info, i in create_infos {
 		total_size += info.size
-		assert(info.buffer != nil)
+		if (info.buffer == nil) {
+			log.errorf("Bad buffer for: %v", info)
+			fmt.panicf("Buffer nil for index: %d", i)
+		}
 		switch info.type {
 		case .SSBO:
 			assert(info.address != nil)
@@ -2039,6 +2043,10 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	model_vertices, model_starts := model_builder_build(&model_builder)
 	defer delete(model_vertices)
 	engine.model_index_map = model_starts
+
+	for &block in engine.blocks {
+		block.model_index_start = model_starts[block.model_name]
+	}
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		for name, value in engine.model_index_map {
 			delete(name)
@@ -2067,19 +2075,73 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	MAKE_SIZE :: 16
+	MAKE_SIZE :: 32
+
+	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
+	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
+
 	for x in 0 ..< MAKE_SIZE {
 		for z in 0 ..< MAKE_SIZE {
 			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
-			log.infof("Generating chunk: %v", pos)
+			map_insert(&engine.chunks, pos, Chunk{})
+			map_insert(&engine.chunk_meshes, pos, ChunkMesh{})
+		}
+	}
+
+	log.infof("Gening chunks")
+
+	for x in 0 ..< MAKE_SIZE {
+		for z in 0 ..< MAKE_SIZE {
+			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
+			//log.infof("Generating chunk: %v", pos)
 			engine.chunks[pos] = Chunk{}
 			chunk_gen(engine, &engine.chunks[pos], pos)
 			//chunk_gen_blocks(engine, &engine.chunks[pos])
-
-			engine.chunk_meshes[pos] = ChunkMesh{}
-			chunk_mesh_gen(&engine.chunk_meshes[pos], engine, &engine.chunks[pos], pos) or_return
 		}
 	}
+
+	log.infof("Gening meshes")
+
+	start := time.now()
+	chunk_builders: [MAKE_SIZE * MAKE_SIZE]ChunkBuilder
+	for x in 0 ..< MAKE_SIZE {
+		log.infof("Transfering meshes for x: %d", x)
+		for z in 0 ..< MAKE_SIZE {
+			idx := x * MAKE_SIZE + z
+			//chunk_builder_clear(&chunk_builders[idx])
+			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
+
+			engine.chunk_meshes[pos] = ChunkMesh{}
+			chunk_builders[idx] = chunk_mesh_gen(engine, &engine.chunks[pos], pos)
+			shrink_dynamic_array(&chunk_builders[idx].indices)
+			shrink_dynamic_array(&chunk_builders[idx].vertices)
+		}
+	}
+	end := time.now()
+	diff := time.diff(start, end)
+
+	log.infof("Diff gen: %v", diff)
+	start = time.now()
+	{
+		meshes := chunk_builder_build_batch(chunk_builders[:], engine) or_return
+		defer delete(meshes)
+
+		for x in 0 ..< MAKE_SIZE {
+			for z in 0 ..< MAKE_SIZE {
+				idx := x * MAKE_SIZE + z
+				defer chunk_builder_deinit(&chunk_builders[idx])
+				pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
+				engine.chunk_meshes[pos] = meshes[idx]
+			}
+		}
+	}
+	end = time.now()
+
+	diff = time.diff(start, end)
+
+	log.infof("Diff: %v", diff)
+
+	log.infof("Done")
 
 	create_upload_infos := [?]BufferCreateUploadInfo {
 		buffer_create_upload_info(

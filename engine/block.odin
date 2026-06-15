@@ -285,6 +285,7 @@ Block :: struct {
 	userdata:          rawptr,
 	vtable:            BlockVtable,
 	model_index_start: ModelIndex,
+	model_name:        string,
 }
 
 Air :: Block {
@@ -409,20 +410,18 @@ create_cube :: proc(
 
 		i := engine.texture_atlas.texture_map[cube_data.name]
 
+		y_offset := (1.0 / cast(f32)len(engine.texture_atlas.texture_map))
 		for &vertex in model.vertices {
-			y_offset := (1.0 / cast(f32)len(engine.texture_atlas.texture_map))
 			vertex.uv_x *= 1.0
 			vertex.uv_y *= y_offset
 			vertex.uv_y += y_offset * cast(f32)i
 		}
 
-		name_buffer: [1024]u8
+		block.model_name = fmt.aprintf("cube/%s", cube_data.name)
 
-		name := fmt.bprintf(name_buffer[:], "cube/%s", cube_data.name)
+		log.infof("Registering block: %s", block.model_name)
 
-		log.infof("Registering block: %s", name)
-
-		model_builder_register_model(model_builder, name, model)
+		model_builder_register_model(model_builder, block.model_name, model)
 	}
 
 	block.vtable.populate_chunk =
@@ -435,18 +434,11 @@ create_cube :: proc(
 	) {
 		context = engine.ctx
 
-		cube := cast(^CubeData)block.userdata
-
-		name_buffer: [1024]u8
-
-		name := fmt.bprintf(name_buffer[:], "cube/%s", cube.name)
-
-		vertices := make([dynamic]ChunkVertex, 0, len(baseChunkVertices))
-		defer delete(vertices)
-		indices := make([dynamic]u32, 0, len(baseIndices))
-		defer delete(indices)
+		vertices: [24]ChunkVertex //= make([dynamic]ChunkVertex, 0, len(baseChunkVertices))
+		vertices_count := 0
+		indices: [36]u32 // = make([dynamic]u32, 0, len(baseIndices))
+		indices_count := 0
 		max_index := chunk_builder.start_index
-		local_max := max_index
 
 		for face in 0 ..< 6 {
 			neighbor_pos, in_chunk := get_neigbor_pos_in_chunk(in_chunk_position, cast(Face)face)
@@ -459,9 +451,9 @@ create_cube :: proc(
 
 			base := face * 6
 			for j in 0 ..< 6 {
-				index := baseIndices[base + j] + cast(u32)len(vertices) + max_index
-				append(&indices, index)
-				local_max = max(index, local_max)
+				index := baseIndices[base + j] + cast(u32)vertices_count + max_index
+				indices[indices_count] = index
+				indices_count += 1
 			}
 
 			for j in 0 ..< 4 {
@@ -469,21 +461,23 @@ create_cube :: proc(
 					in_chunk_position.x,
 					in_chunk_position.y,
 					in_chunk_position.z,
-					engine.model_index_map[name] + baseChunkVertices[face * 4 + j].model_index,
+					block.model_index_start + baseChunkVertices[face * 4 + j].model_index,
 				)
 
-				append(&vertices, vertex)
+				vertices[vertices_count] = vertex
+				vertices_count += 1
 			}
 		}
 
-		chunk_builder_push_indices(chunk_builder, indices[:])
-		chunk_builder_push_vertices(chunk_builder, vertices[:])
+		chunk_builder_push_indices(chunk_builder, indices[:indices_count])
+		chunk_builder_push_vertices(chunk_builder, vertices[:vertices_count])
 	}
 
 	block.vtable.deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {
 		context = engine.ctx
 		cube := cast(^CubeData)block.userdata
 		free(cube)
+		delete(block.model_name)
 	}
 
 	return block

@@ -1,5 +1,6 @@
 package engine
 
+import "core:log"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
@@ -67,25 +68,26 @@ chunk_mesh_delete :: proc(engine: ^VulkanEngine, chunk_mesh: ^ChunkMesh) {
 	destroy_buffer(engine, chunk_mesh.meshBuffers.vertexBuffer)
 }
 
-chunk_mesh_gen :: proc(
-	chunk_mesh: ^ChunkMesh,
-	engine: ^VulkanEngine,
-	chunk: ^Chunk,
-	pos: [3]i32,
-) -> vk.Result {
+chunk_mesh_gen :: proc(engine: ^VulkanEngine, chunk: ^Chunk, pos: [3]i32) -> ChunkBuilder {
 	chunk_builder: ChunkBuilder = {}
 	chunk_builder_clear(&chunk_builder)
-	defer chunk_builder_deinit(&chunk_builder)
+	reserve(&chunk_builder.indices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 32)
+	reserve(&chunk_builder.vertices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 26)
 
-	for block, idx in chunk.blocks {
-		pos := linalg.array_cast(chunk_calc_pos(idx), u32)
-		blk_data := &engine.blocks[block.block_id]
-		blk_data.vtable.populate_chunk(blk_data, engine, &chunk_builder, chunk, pos)
+	for z in u32(0) ..< CHUNK_WIDTH {
+		for y in u32(0) ..< CHUNK_HEIGHT {
+			for x in u32(0) ..< CHUNK_WIDTH {
+				idx := chunk_calc_index({int(x), int(y), int(z)})
+				block := chunk.blocks[idx]
+				if block.block_id == 0 {continue}
+				blk_data := &engine.blocks[block.block_id]
+				blk_data.vtable.populate_chunk(blk_data, engine, &chunk_builder, chunk, {x, y, z})
+			}
+		}
 	}
 
-	chunk_mesh^ = chunk_builder_build(&chunk_builder, engine) or_return
 
-	return .SUCCESS
+	return chunk_builder
 }
 
 chunk_mesh_render :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
@@ -165,6 +167,48 @@ chunk_builder_clear :: proc(chunk_builder: ^ChunkBuilder) {
 	chunk_builder.start_index = 0
 }
 
+chunk_builder_build_batch :: proc(
+	chunk_builders: []ChunkBuilder,
+	engine: ^VulkanEngine,
+) -> (
+	meshes: []ChunkMesh,
+	err: vk.Result,
+) {
+	meshes = make([]ChunkMesh, len(chunk_builders))
+
+	create_upload_infos: [dynamic]BufferCreateUploadInfo
+	reserve(&create_upload_infos, len(chunk_builders) * 2)
+	defer delete(create_upload_infos)
+
+	for i in 0 ..< len(chunk_builders) {
+		mesh := &meshes[i]
+		chunk_builder := chunk_builders[i]
+
+
+		append(
+			&create_upload_infos,
+			buffer_create_upload_info(
+				&mesh.meshBuffers.vertexBuffer,
+				&mesh.meshBuffers.vertexBufferAddress,
+				chunk_builder.vertices[:],
+				.SSBO,
+			),
+			buffer_create_upload_info(
+				&mesh.meshBuffers.indexBuffer,
+				nil,
+				chunk_builder.indices[:],
+				.Index,
+			),
+		)
+
+		mesh.size = cast(u32)len(chunk_builder.indices)
+	}
+
+	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
+
+	return
+}
+
 chunk_builder_build :: proc(
 	chunk_builder: ^ChunkBuilder,
 	engine: ^VulkanEngine,
@@ -212,9 +256,7 @@ chunk_builder_push_index :: proc(self: ^ChunkBuilder, index: u32) {
 }
 
 chunk_builder_push_indices :: proc(self: ^ChunkBuilder, indices: []u32) {
-	for index in indices {
-		self.start_index = max(self.start_index, index + 1)
-	}
+	self.start_index = cast(u32)len(self.vertices)
 
 	append(&self.indices, ..indices)
 }
