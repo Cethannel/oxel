@@ -138,9 +138,6 @@ VulkanEngine :: struct {
 	meshPipelineLayout:             vk.PipelineLayout,
 	meshPipeline:                   vk.Pipeline,
 
-	// :gltf test
-	testMeshes:                     [dynamic]MeshAsset,
-
 	// :images
 	white_image:                    AllocatedImage,
 	black_image:                    AllocatedImage,
@@ -154,16 +151,13 @@ VulkanEngine :: struct {
 	camera_pos:                     [3]f32,
 
 	// :chunk_meshes
-	chunk_meshes:                   #soa[dynamic]ChunkMesh,
-	chunks:                         #soa[dynamic]Chunk,
+	chunk_meshes:                   map[[3]i32]ChunkMesh,
+	chunks:                         map[[3]i32]Chunk,
 
-	// thing:
-	block_index_buffer:             AllocatedBuffer,
-	block_vertex_buffer:            AllocatedBuffer,
-	block_vertex_buffer_address:    vk.DeviceAddress,
+	// :model 
 	model_buffer:                   AllocatedBuffer,
 	model_buffer_address:           vk.DeviceAddress,
-	block_index_len:                u32,
+
 
 	// :blocks
 	blocks:                         [dynamic]Block,
@@ -1595,18 +1589,18 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	view_from_world := linalg.matrix4_look_at_f32(
 	engine.camera_pos, // eye
-	{0, 0, 0}, // center (or a look target)
+	{0, engine.camera_pos.y, 0}, // center (or a look target)
 	{0, 1, 0}, // up
 	)
 
-	{
-		world_from_model := linalg.matrix4_translate_f32({0, 0, 0})
+	for pos, chunk_mesh in engine.chunk_meshes {
+		world_from_model := linalg.matrix4_translate_f32(chunk_pos_to_world_pos(pos, f32))
 
 		// MVP in the order the shader expects (usually column-major)
 		mvp := projection_from_view * view_from_world * world_from_model
 
 		push_constants.worldMatrix = mvp
-		push_constants.vertexBuffer = engine.block_vertex_buffer_address
+		push_constants.vertexBuffer = chunk_mesh.meshBuffers.vertexBufferAddress
 		push_constants.modelBuffer = engine.model_buffer_address
 
 		vk.CmdPushConstants(
@@ -1618,48 +1612,16 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 			&push_constants,
 		)
 
-		vk.CmdBindIndexBuffer(cmd, engine.block_index_buffer.buffer, 0, .UINT32)
+		vk.CmdBindIndexBuffer(cmd, chunk_mesh.meshBuffers.indexBuffer.buffer, 0, .UINT32)
 
 		vk.CmdDrawIndexed(
 			cmd,
-			engine.block_index_len,
+			chunk_mesh.size,
 			1,
 			0, //Start index
 			0,
 			0,
 		)
-	}
-
-	if false {
-		for selectedMesh, i in engine.testMeshes {
-			model := linalg.matrix4_translate_f32({cast(f32)i * 2 - 2, 0, 0})
-
-			// MVP in the order the shader expects (usually column-major)
-			mvp := projection_from_view * view_from_world * model
-
-			push_constants.worldMatrix = mvp
-			push_constants.vertexBuffer = selectedMesh.meshBuffers.vertexBufferAddress
-
-			vk.CmdPushConstants(
-				cmd,
-				engine.meshPipelineLayout,
-				{.VERTEX},
-				0,
-				size_of(GPUDrawPushConstants),
-				&push_constants,
-			)
-
-			vk.CmdBindIndexBuffer(cmd, selectedMesh.meshBuffers.indexBuffer.buffer, 0, .UINT32)
-
-			vk.CmdDrawIndexed(
-				cmd,
-				selectedMesh.surfaces[0].count,
-				1,
-				selectedMesh.surfaces[0].startIndex,
-				0,
-				0,
-			)
-		}
 	}
 }
 
@@ -2078,6 +2040,8 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.blocks_map)
 	})
 
+	append(&engine.blocks, Air)
+
 	register_cube(
 		engine,
 		"stone",
@@ -2127,6 +2091,9 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	defer delete(model_vertices)
 	engine.model_index_map = model_starts
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		for name, value in engine.model_index_map {
+			delete(name)
+		}
 		delete(engine.model_index_map)
 	})
 
@@ -2138,6 +2105,29 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	assert(len(model_vertices) > 0)
 
+	clear(&engine.chunks)
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		delete(engine.chunks)
+	})
+
+	clear(&engine.chunk_meshes)
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		for pos, &chunk_mesh in &engine.chunk_meshes {
+			chunk_mesh_delete(engine, &chunk_mesh)
+		}
+		delete(engine.chunk_meshes)
+	})
+
+	{
+		pos: [3]i32 = {0, 0, 0}
+		engine.chunks[pos] = Chunk{}
+		chunk_gen(engine, &engine.chunks[pos], pos)
+		chunk_gen_blocks(engine, &engine.chunks[pos])
+
+		engine.chunk_meshes[pos] = ChunkMesh{}
+		chunk_mesh_gen(&engine.chunk_meshes[pos], engine, &engine.chunks[pos], pos)
+	}
+
 	chunk_builder: ChunkBuilder
 	chunk_builder_clear(&chunk_builder)
 	defer chunk_builder_deinit(&chunk_builder)
@@ -2146,70 +2136,17 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		block.vtable.populate_chunk(&block, engine, &chunk_builder, {0, cast(u32)i, 0})
 	}
 
-	if false {
-		indices := make([]u32, len(baseIndices) * len(engine.texture_atlas.texture_map))
-		defer delete(indices)
-
-		max_index: u32 = 0
-		for tex_i in 0 ..< len(engine.texture_atlas.texture_map) {
-			local_max: u32 = max_index
-			for face in 0 ..< 6 {
-				base := face * 6
-				offset: u32 = cast(u32)face * 4
-				for j in 0 ..< 6 {
-					index := baseIndices[base + j] + offset + max_index
-					indices[tex_i * len(baseIndices) + base + j] = index
-					local_max = max(index, local_max)
-				}
-			}
-			max_index = local_max + 1
-		}
-
-		chunk_vertices := make(
-			[]ChunkVertex,
-			len(baseChunkVertices) * len(engine.texture_atlas.texture_map),
-		)
-		defer delete(chunk_vertices)
-		for i in 0 ..< len(engine.texture_atlas.texture_map) {
-			block := baseChunkVertices
-			for &vertex in block {
-				vertex = make_chunk_vertex(
-					0,
-					cast(u32)i,
-					0,
-					vertex.model_index + cast(u32)i * cast(u32)len(modelVertices),
-				)
-			}
-			copy(chunk_vertices[i * len(block):][:len(block)], block[:])
-		}
-	}
-
 	create_upload_infos := [?]BufferCreateUploadInfo {
-		buffer_create_upload_info(
-			&engine.block_vertex_buffer,
-			&engine.block_vertex_buffer_address,
-			chunk_builder.vertices[:],
-			.SSBO,
-		),
 		buffer_create_upload_info(
 			&engine.model_buffer,
 			&engine.model_buffer_address,
 			model_vertices[:],
 			.SSBO,
 		),
-		buffer_create_upload_info(
-			&engine.block_index_buffer,
-			nil,
-			chunk_builder.indices[:],
-			.Index,
-		),
 	}
 	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
-	engine.block_index_len = cast(u32)len(chunk_builder.indices)
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
-		destroy_buffer(engine, engine.block_vertex_buffer)
 		destroy_buffer(engine, engine.model_buffer)
-		destroy_buffer(engine, engine.block_index_buffer)
 	})
 
 	sampl: vk.SamplerCreateInfo = {

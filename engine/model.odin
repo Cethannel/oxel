@@ -1,5 +1,6 @@
 package engine
 
+import "core:strings"
 ModelBuilder :: struct {
 	models: map[string]Model,
 }
@@ -9,6 +10,7 @@ model_builder_init :: proc(model_builder: ^ModelBuilder) {
 }
 
 model_builder_register_model :: proc(model_builder: ^ModelBuilder, name: string, model: Model) {
+	name := strings.clone(name)
 	model_builder.models[name] = model
 }
 

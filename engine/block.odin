@@ -276,6 +276,29 @@ Block :: struct {
 	model_index_start: ModelIndex,
 }
 
+Air :: Block {
+	userdata = nil,
+	vtable = BlockVtable {
+		register_textures = proc "c" (
+			block: ^Block,
+			engine: ^VulkanEngine,
+			atlas_builder: ^AtlasBuilder,
+		) {},
+		register_model = proc "c" (
+			block: ^Block,
+			engine: ^VulkanEngine,
+			model_builder: ^ModelBuilder,
+		) {},
+		populate_chunk = proc "c" (
+			block: ^Block,
+			engine: ^VulkanEngine,
+			chunk_builder: ^ChunkBuilder,
+			in_chunk_position: [3]u32,
+		) {},
+		deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {},
+	},
+}
+
 CubeData :: struct {
 	name:         string,
 	path:         string,
@@ -338,7 +361,7 @@ create_cube :: proc(
 
 		name_buffer: [1024]u8
 
-		name := fmt.aprintf("cube/%s", cube_data.name)
+		name := fmt.bprintf(name_buffer[:], "cube/%s", cube_data.name)
 
 		log.infof("Registering block: %s", name)
 

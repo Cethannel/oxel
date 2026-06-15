@@ -19,3 +19,9 @@ build_vma:
 
 nix_run: build
 	nixVulkanIntel ./oxel
+
+nix_gdb_run: build
+	nixVulkanIntel gdb --args ./oxel
+
+gdb_alloc: build
+	nixVulkanIntel gdb -ex "source ignore_log_bp.py" -ex 'python IgnoreLogBreakpoint("your_function_name")' --args ./oxel

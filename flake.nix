@@ -42,11 +42,11 @@
           vulkan-headers
           SDL2.dev
           sdl3.dev
-          xorg.libX11
-          xorg.libXrandr
-          xorg.libXinerama
-          xorg.libXcursor
-          xorg.libXi
+          libX11
+          libXrandr
+          libXinerama
+          libXcursor
+          libXi
           wayland
           libxkbcommon
         ]);
