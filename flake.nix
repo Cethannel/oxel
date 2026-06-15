@@ -3,15 +3,12 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nixgl.url = "github:nix-community/nixGL";
-    nixgl.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, nixgl }:
+  outputs = { self, nixpkgs }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
-      nixGL = nixgl.packages.${system};
+      pkgs = import nixpkgs { inherit system; };
 
       runtimeLibs = with pkgs; [
         vulkan-loader
@@ -20,7 +17,7 @@
         stdenv.cc.cc.lib
         libcxx
         libGL
-				imgui
+        imgui
       ];
     in
     {
@@ -33,10 +30,7 @@
           glslang
           premake5
           bash
-          # Add the right nixVulkan wrapper for your GPU
-          nixGL.nixVulkanIntel   # Intel / Mesa (most common)
-          # nixGL.nixVulkanMesa  # alternative broad Mesa
-          # nixGL.auto.nixVulkanNvidia or nixGL.nixVulkanNvidia if you have NVIDIA
+          mangohud
         ];
 
         buildInputs = runtimeLibs ++ (with pkgs; [
@@ -52,12 +46,9 @@
           libxkbcommon
         ]);
 
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
+        LD_LIBRARY_PATH = "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}";
 
         VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
-
-        # Optional: force X11 if you have Wayland issues
-        # SDL_VIDEODRIVER = "x11";
       };
     };
 }

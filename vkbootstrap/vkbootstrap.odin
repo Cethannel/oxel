@@ -1,5 +1,6 @@
 package vkbootstrap
 
+import "core:log"
 // Core
 import "base:runtime"
 import "core:dynlib"
@@ -1439,6 +1440,7 @@ physical_device_selector_select_devices :: proc(
 			allocator,
 			loc,
 		) or_return
+		log.infof("Checking: %s", physical_device.name)
 
 		physical_device.suitable = physical_device_selector_is_device_suitable(
 			self,
@@ -1493,6 +1495,10 @@ physical_device_selector_select :: proc(
 ) {
 	selected_devices := physical_device_selector_select_devices(self, allocator) or_return
 	defer delete(selected_devices, allocator)
+
+	for device in selected_devices {
+		log.infof("Got device: %s", device.name)
+	}
 
 	total_devices := len(selected_devices)
 	physical_device = selected_devices[0]

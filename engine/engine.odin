@@ -151,7 +151,7 @@ VulkanEngine :: struct {
 	chunk_meshes:                   map[[3]i32]ChunkMesh,
 	chunks:                         map[[3]i32]Chunk,
 
-	// :model 
+	// :model
 	model_buffer:                   AllocatedBuffer,
 	model_buffer_address:           vk.DeviceAddress,
 
@@ -160,7 +160,7 @@ VulkanEngine :: struct {
 	blocks_map:                     map[string]BlockIdx,
 	model_index_map:                map[string]ModelIndex,
 
-	// 
+	//
 	texture_atlas:                  Atlas,
 }
 
@@ -361,14 +361,15 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	//engine.draw_extent.width = engine.draw_image.image_extent.width
 	//engine.draw_extent.height = engine.draw_image.image_extent.height
-	engine.draw_extent.height =
-	cast(u32)(cast(f32)(min(
+	engine.draw_extent.height = cast(u32)(cast(f32)(min(
 				engine.swapchain_extent.height,
 				engine.draw_image.imageExtent.height,
 			)) *
 		engine.render_scale)
-	engine.draw_extent.width =
-	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.imageExtent.width)) *
+	engine.draw_extent.width = cast(u32)(cast(f32)(min(
+				engine.swapchain_extent.width,
+				engine.draw_image.imageExtent.width,
+			)) *
 		engine.render_scale)
 
 
@@ -532,15 +533,16 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	selector := vkb.create_physical_device_selector_with_surface(engine.instance, engine.surface)
 	defer vkb.destroy_physical_device_selector(selector)
 
-	vkb.physical_device_selector_set_minimum_version_values(selector, 1, 2)
+	vkb.physical_device_selector_set_minimum_version_values(selector, 1, 3)
 	vkb.physical_device_selector_set_required_features(selector, features)
 	//vkb.physical_device_selector_set_required_features_11(selector, features11)
 	//vkb.physical_device_selector_set_required_features_12(selector, features12)
 	vkb.physical_device_selector_set_required_features_13(selector, features13)
-	vkb.physical_device_selector_prefer_gpu_device_type(selector)
+	vkb.physical_device_selector_prefer_gpu_device_type(selector, .Discrete)
 	vkb.physical_device_selector_set_surface(selector, engine.surface)
 
 	physical_device := vkb.physical_device_selector_select(selector) or_return
+	log.infof("Got dev: %s", physical_device.name)
 	append(
 		&engine.deinitFuncs,
 		proc(engine: ^VulkanEngine) {vkb.destroy_physical_device(engine.device.physical_device)},
@@ -576,7 +578,6 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	allocator_info.device = engine.device.device
 	allocator_info.instance = engine.instance.instance
 	allocator_info.flags = {.Buffer_Device_Address}
-
 
 	// Provide Vulkan function pointers (critical!)
 	vulkan_funcs := vma.create_vulkan_functions()
@@ -1459,7 +1460,7 @@ immediate_submit :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) -> vk.Res
 
 	vk.QueueSubmit2(engine.graphics_queue, 1, &submit, engine.imm_fence) or_return
 
-	vk.WaitForFences(engine.device.device, 1, &engine.imm_fence, true, 99999999) or_return
+	vk.WaitForFences(engine.device.device, 1, &engine.imm_fence, true, max(u64)) or_return
 
 	return nil
 }
@@ -2075,7 +2076,7 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	MAKE_SIZE :: 32
+	MAKE_SIZE :: 256
 
 	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
 	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
