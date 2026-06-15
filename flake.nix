@@ -20,6 +20,7 @@
         stdenv.cc.cc.lib
         libcxx
         libGL
+				imgui
       ];
     in
     {

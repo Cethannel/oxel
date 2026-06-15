@@ -143,7 +143,7 @@ chunk_pos_to_world_pos_int :: proc(chunk_pos: [3]i32, $T: typeid) -> [3]T {
 	world_int: [3]i32 = {
 		chunk_pos.x * CHUNK_WIDTH,
 		chunk_pos.y * CHUNK_HEIGHT,
-		chunk_pos.y * CHUNK_WIDTH,
+		chunk_pos.z * CHUNK_WIDTH,
 	}
 	return linalg.array_cast(world_int, T)
 }

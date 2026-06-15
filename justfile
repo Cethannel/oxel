@@ -4,9 +4,14 @@ build:
 run: build
 	LD_LIBRARY_PATH="/lib64:${LD_LIBRARY_PATH:-}" ./oxel
 
-patch_run: build
+patch: build
 	patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 ./oxel
+
+patch_run: patch
 	./oxel
+
+patch_mango: patch
+	MANGOHUD_CONFIG=full,position=top-left mangohud ./oxel
 
 shaders:
 	cd shaders && ./compile.sh

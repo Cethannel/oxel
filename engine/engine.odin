@@ -139,10 +139,6 @@ VulkanEngine :: struct {
 	meshPipeline:                   vk.Pipeline,
 
 	// :images
-	white_image:                    AllocatedImage,
-	black_image:                    AllocatedImage,
-	grey_image:                     AllocatedImage,
-	error_checkerboard_image:       AllocatedImage,
 	default_sampler_linear:         vk.Sampler,
 	default_sampler_nearest:        vk.Sampler,
 	single_image_descriptor_layout: vk.DescriptorSetLayout,
@@ -157,7 +153,6 @@ VulkanEngine :: struct {
 	// :model 
 	model_buffer:                   AllocatedBuffer,
 	model_buffer_address:           vk.DeviceAddress,
-
 
 	// :blocks
 	blocks:                         [dynamic]Block,
@@ -704,7 +699,7 @@ create_swapchain :: proc(engine: ^VulkanEngine, width: u32, height: u32) -> vkb.
 			colorSpace = .SRGB_NONLINEAR,
 		},
 	)
-	vkb.swapchain_builder_set_desired_present_mode(swapchain_builder, .FIFO)
+	vkb.swapchain_builder_set_desired_present_mode(swapchain_builder, .MAILBOX)
 	vkb.swapchain_builder_set_desired_extent(swapchain_builder, width, height)
 	vkb.swapchain_builder_add_image_usage_flags(
 		swapchain_builder,
@@ -1548,7 +1543,6 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 		descriptor_writer_write_image(
 			&writer,
 			0,
-			//engine.error_checkerboard_image.imageView,
 			engine.texture_atlas.image.imageView,
 			engine.default_sampler_nearest,
 			.SHADER_READ_ONLY_OPTIMAL,
@@ -1987,51 +1981,6 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	ok: bool
 
-
-	//3 default textures, white, grey, black. 1 pixel each
-	white := pack_unorm4x8({1, 1, 1, 1})
-	engine.white_image = create_image_with_data(
-		engine,
-		&white,
-		vk.Extent3D{1, 1, 1},
-		.R8G8B8A8_UNORM,
-		{.SAMPLED},
-	) or_return
-
-	grey := pack_unorm4x8({0.66, 0.66, 0.66, 1})
-	engine.grey_image = create_image_with_data(
-		engine,
-		&grey,
-		vk.Extent3D{1, 1, 1},
-		.R8G8B8A8_UNORM,
-		{.SAMPLED},
-	) or_return
-
-	black := cast(u32)Color{r = 0, g = 0, b = 0, a = 255}
-	engine.black_image = create_image_with_data(
-		engine,
-		&black,
-		vk.Extent3D{1, 1, 1},
-		.R8G8B8A8_UNORM,
-		{.SAMPLED},
-	) or_return
-
-	//checkerboard image
-	magenta := cast(u32)Color{r = 255, g = 0, b = 255, a = 255}
-	pixels: [16 * 16]u32 //for 16x16 checkerboard texture
-	for x in 0 ..< 16 {
-		for y in 0 ..< 16 {
-			pixels[y * 16 + x] = ((x % 2) ~ (y % 2)) != 0 ? magenta : black
-		}
-	}
-	engine.error_checkerboard_image = create_image_with_data(
-		engine,
-		raw_data(pixels[:]),
-		vk.Extent3D{16, 16, 1},
-		.R8G8B8A8_UNORM,
-		{.SAMPLED},
-	) or_return
-
 	engine.blocks = make([dynamic]Block)
 	engine.blocks_map = make(map[string]BlockIdx)
 
@@ -2118,22 +2067,16 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	{
-		pos: [3]i32 = {0, 0, 0}
-		engine.chunks[pos] = Chunk{}
-		chunk_gen(engine, &engine.chunks[pos], pos)
-		chunk_gen_blocks(engine, &engine.chunks[pos])
+	for x in 0 ..< 10 {
+		for z in 0 ..< 10 {
+			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
+			engine.chunks[pos] = Chunk{}
+			chunk_gen(engine, &engine.chunks[pos], pos)
+			//chunk_gen_blocks(engine, &engine.chunks[pos])
 
-		engine.chunk_meshes[pos] = ChunkMesh{}
-		chunk_mesh_gen(&engine.chunk_meshes[pos], engine, &engine.chunks[pos], pos)
-	}
-
-	chunk_builder: ChunkBuilder
-	chunk_builder_clear(&chunk_builder)
-	defer chunk_builder_deinit(&chunk_builder)
-
-	for &block, i in engine.blocks {
-		block.vtable.populate_chunk(&block, engine, &chunk_builder, {0, cast(u32)i, 0})
+			engine.chunk_meshes[pos] = ChunkMesh{}
+			chunk_mesh_gen(&engine.chunk_meshes[pos], engine, &engine.chunks[pos], pos)
+		}
 	}
 
 	create_upload_infos := [?]BufferCreateUploadInfo {
@@ -2165,11 +2108,6 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		vk.DestroySampler(engine.device.device, engine.default_sampler_nearest, nil)
 		vk.DestroySampler(engine.device.device, engine.default_sampler_linear, nil)
-
-		destroy_image(engine, &engine.white_image)
-		destroy_image(engine, &engine.grey_image)
-		destroy_image(engine, &engine.black_image)
-		destroy_image(engine, &engine.error_checkerboard_image)
 	})
 
 	engine.camera_pos = {0, 0, -5}
