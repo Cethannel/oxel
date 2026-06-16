@@ -150,6 +150,8 @@ VulkanEngine :: struct {
 	// :chunk_meshes
 	chunk_meshes:                   map[[3]i32]ChunkMesh,
 	chunks:                         map[[3]i32]Chunk,
+	chunks_to_gen:                  [dynamic][3]i32,
+	meshes_to_gen:                  [dynamic][3]i32,
 
 	// :model
 	model_buffer:                   AllocatedBuffer,
@@ -298,6 +300,46 @@ run :: proc(engine: ^VulkanEngine) {
 
 		imgui.Render()
 
+		for i in 0 ..< 6 {
+			if len(engine.chunks_to_gen) <= 0 {
+				break
+			}
+			pos := pop(&engine.chunks_to_gen)
+			log.infof("Genertating: %v", pos)
+			engine.chunks[pos] = Chunk{}
+			chunk_gen(engine, &engine.chunks[pos], pos)
+			append(&engine.meshes_to_gen, pos)
+		}
+
+
+		mesh: if len(engine.meshes_to_gen) > 5 {
+			BATCH_SIZE :: 32
+			poses: [BATCH_SIZE][3]i32
+			chunk_builders: [BATCH_SIZE]ChunkBuilder
+			len, coords := dynamic_array_drain(&engine.meshes_to_gen, poses[:])
+			for pos, idx in coords {
+				log.infof("Mesh for: %v", pos)
+				engine.chunk_meshes[pos] = ChunkMesh{}
+				chunk_builders[idx] = chunk_mesh_gen(engine, &engine.chunks[pos], pos)
+				shrink_dynamic_array(&chunk_builders[idx].indices)
+				shrink_dynamic_array(&chunk_builders[idx].vertices)
+			}
+
+			meshes, err := chunk_builder_build_batch(chunk_builders[:len], engine)
+			if err != nil {
+				log.errorf("Failed to build batch: %v", err)
+				append(&engine.chunks_to_gen, ..coords)
+				break mesh
+			}
+			defer delete(meshes)
+
+			for pos, idx in coords {
+				log.infof("Uploading for: %v", pos)
+				defer chunk_builder_deinit(&chunk_builders[idx])
+				engine.chunk_meshes[pos] = meshes[idx]
+			}
+		}
+
 		draw(engine)
 	}
 }
@@ -361,15 +403,14 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	//engine.draw_extent.width = engine.draw_image.image_extent.width
 	//engine.draw_extent.height = engine.draw_image.image_extent.height
-	engine.draw_extent.height = cast(u32)(cast(f32)(min(
+	engine.draw_extent.height =
+	cast(u32)(cast(f32)(min(
 				engine.swapchain_extent.height,
 				engine.draw_image.imageExtent.height,
 			)) *
 		engine.render_scale)
-	engine.draw_extent.width = cast(u32)(cast(f32)(min(
-				engine.swapchain_extent.width,
-				engine.draw_image.imageExtent.width,
-			)) *
+	engine.draw_extent.width =
+	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.imageExtent.width)) *
 		engine.render_scale)
 
 
@@ -2076,73 +2117,22 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	MAKE_SIZE :: 256
+	MAKE_SIZE :: 64
 
 	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
 	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
 
-	for x in 0 ..< MAKE_SIZE {
-		for z in 0 ..< MAKE_SIZE {
-			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
-			map_insert(&engine.chunks, pos, Chunk{})
-			map_insert(&engine.chunk_meshes, pos, ChunkMesh{})
-		}
-	}
-
-	log.infof("Gening chunks")
+	clear(&engine.chunks_to_gen)
+	reserve(&engine.chunks_to_gen, MAKE_SIZE * MAKE_SIZE)
 
 	for x in 0 ..< MAKE_SIZE {
 		for z in 0 ..< MAKE_SIZE {
 			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
-			//log.infof("Generating chunk: %v", pos)
-			engine.chunks[pos] = Chunk{}
-			chunk_gen(engine, &engine.chunks[pos], pos)
-			//chunk_gen_blocks(engine, &engine.chunks[pos])
+			append(&engine.chunks_to_gen, pos)
+			//map_insert(&engine.chunks, pos, Chunk{})
+			//map_insert(&engine.chunk_meshes, pos, ChunkMesh{})
 		}
 	}
-
-	log.infof("Gening meshes")
-
-	start := time.now()
-	chunk_builders: [MAKE_SIZE * MAKE_SIZE]ChunkBuilder
-	for x in 0 ..< MAKE_SIZE {
-		log.infof("Transfering meshes for x: %d", x)
-		for z in 0 ..< MAKE_SIZE {
-			idx := x * MAKE_SIZE + z
-			//chunk_builder_clear(&chunk_builders[idx])
-			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
-
-			engine.chunk_meshes[pos] = ChunkMesh{}
-			chunk_builders[idx] = chunk_mesh_gen(engine, &engine.chunks[pos], pos)
-			shrink_dynamic_array(&chunk_builders[idx].indices)
-			shrink_dynamic_array(&chunk_builders[idx].vertices)
-		}
-	}
-	end := time.now()
-	diff := time.diff(start, end)
-
-	log.infof("Diff gen: %v", diff)
-	start = time.now()
-	{
-		meshes := chunk_builder_build_batch(chunk_builders[:], engine) or_return
-		defer delete(meshes)
-
-		for x in 0 ..< MAKE_SIZE {
-			for z in 0 ..< MAKE_SIZE {
-				idx := x * MAKE_SIZE + z
-				defer chunk_builder_deinit(&chunk_builders[idx])
-				pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
-				engine.chunk_meshes[pos] = meshes[idx]
-			}
-		}
-	}
-	end = time.now()
-
-	diff = time.diff(start, end)
-
-	log.infof("Diff: %v", diff)
-
-	log.infof("Done")
 
 	create_upload_infos := [?]BufferCreateUploadInfo {
 		buffer_create_upload_info(

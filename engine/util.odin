@@ -158,3 +158,18 @@ dupe :: proc(
 	mem.copy(raw_data(out), raw_data(input), size_of(E) * len(input))
 	return out, nil
 }
+
+dynamic_array_drain :: proc(arr: ^[dynamic]$T, dest: []T) -> (length: int, slice: []T) {
+	length = min(len(arr), len(dest))
+
+	log.infof("Length: %d", length)
+
+	copy(dest, arr[:length])
+
+	remove_range(arr, 0, length)
+
+	log.infof("arr: %d", len(arr))
+
+	slice = dest[:length]
+	return
+}

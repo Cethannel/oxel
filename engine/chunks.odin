@@ -184,6 +184,9 @@ chunk_builder_build_batch :: proc(
 		mesh := &meshes[i]
 		chunk_builder := chunk_builders[i]
 
+		if len(chunk_builder.vertices) == 0 || len(chunk_builder.indices) == 0 {
+			continue
+		}
 
 		append(
 			&create_upload_infos,

@@ -18,6 +18,7 @@
         libcxx
         libGL
         imgui
+				libllvm
       ];
     in
     {
