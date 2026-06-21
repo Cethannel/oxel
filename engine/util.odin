@@ -169,3 +169,7 @@ dynamic_array_drain :: proc(arr: ^[dynamic]$T, dest: []T) -> (length: int, slice
 	slice = dest[:length]
 	return
 }
+
+vec3_to_vec4 :: proc(v: [3]f32, w: f32 = 1.0) -> [4]f32 {
+	return [4]f32{v[0], v[1], v[2], w}
+}

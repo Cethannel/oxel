@@ -97,53 +97,6 @@ chunk_mesh_gen :: proc(engine: ^VulkanEngine, chunk: ^Chunk, pos: [3]i32) -> Chu
 	return chunk_builder
 }
 
-chunk_mesh_render :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
-	push_constants: GPUDrawPushConstants
-	push_constants.worldMatrix = 1.
-
-	fov := math.to_radians_f32(70.0)
-	aspect := f32(engine.draw_extent.width) / f32(engine.draw_extent.height)
-	near: f32 = 0.01
-
-	projection := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
-
-	view := linalg.matrix4_look_at_f32(
-		engine.camera_pos, // eye
-		{0, 0, 0}, // center (or a look target)
-		{0, 1, 0}, // up
-	)
-
-
-	for pos, mesh in engine.chunk_meshes {
-		model := linalg.matrix4_translate_f32(chunk_pos_to_world_pos(pos, f32))
-
-		mvp := projection * view * model
-
-		push_constants.worldMatrix = mvp
-		push_constants.vertexBuffer = mesh.meshBuffers.vertexBufferAddress
-
-		vk.CmdPushConstants(
-			cmd,
-			engine.meshPipelineLayout,
-			{.VERTEX},
-			0,
-			size_of(GPUDrawPushConstants),
-			&push_constants,
-		)
-
-		vk.CmdBindIndexBuffer(cmd, mesh.meshBuffers.indexBuffer.buffer, 0, .UINT32)
-
-		vk.CmdDrawIndexed(
-			cmd,
-			mesh.size,
-			1,
-			0, // Offset
-			0,
-			0,
-		)
-	}
-}
-
 chunk_pos_to_world_pos_int_short :: proc(chunk_pos: [3]i32) -> [3]i32 {
 	return chunk_pos_to_world_pos_int(chunk_pos, i32)
 }

@@ -147,7 +147,7 @@ VulkanEngine :: struct {
 	single_image_descriptor_layout: vk.DescriptorSetLayout,
 
 	//
-	camera_pos:                     [3]f32,
+	main_camera:                    Camera,
 
 	// :chunk_meshes
 	chunk_meshes:                   map[[3]i32]ChunkMesh,
@@ -235,6 +235,7 @@ run :: proc(engine: ^VulkanEngine) {
 
 	for (!quit) {
 		for (sdl2.PollEvent(&e)) {
+			camera_process_sdl_event(&engine.main_camera, &e)
 			imgui_sdl2.ProcessEvent(&e)
 
 			if e.type == .QUIT {
@@ -295,7 +296,7 @@ run :: proc(engine: ^VulkanEngine) {
 		{
 			defer imgui.End()
 			if imgui.Begin("camera") {
-				imgui.InputFloat3("Position", &engine.camera_pos)
+				imgui.InputFloat3("Position", &engine.main_camera.position)
 			}
 		}
 
@@ -1636,11 +1637,9 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	projection_from_view := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
 
-	view_from_world := linalg.matrix4_look_at_f32(
-	engine.camera_pos, // eye
-	{0, engine.camera_pos.y, 0}, // center (or a look target)
-	{0, 1, 0}, // up
-	)
+	camera_process_update(&engine.main_camera)
+
+	view_from_world := camera_get_view_matrix(&engine.main_camera)
 
 	for pos, chunk_mesh in engine.chunk_meshes {
 		world_from_model := linalg.matrix4_translate_f32(chunk_pos_to_world_pos(pos, f32))
@@ -2162,7 +2161,10 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		vk.DestroySampler(engine.device.device, engine.default_sampler_linear, nil)
 	})
 
-	engine.camera_pos = {0, 0, -5}
+	engine.main_camera.position = {0, 0, -5}
+	engine.main_camera.pitch = 0
+	engine.main_camera.yaw = 0
+	engine.main_camera.velocity = 0
 
 	log.info("Initialized default data")
 
