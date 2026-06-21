@@ -274,6 +274,7 @@ BlockVtable :: struct {
 		engine: ^VulkanEngine,
 		chunk_builder: ^ChunkBuilder,
 		chunk: ^Chunk,
+		chunk_pos: [3]i32,
 		in_chunk_position: [3]u32,
 	),
 	deinit:           
@@ -306,6 +307,7 @@ Air :: Block {
 			engine: ^VulkanEngine,
 			chunk_builder: ^ChunkBuilder,
 			chunk: ^Chunk,
+			chunk_pos: [3]i32,
 			in_chunk_position: [3]u32,
 		) {},
 		deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {},
@@ -325,13 +327,7 @@ register_cube :: proc(engine: ^VulkanEngine, name: string, texture: string, text
 	engine.blocks_map[name] = cast(BlockIdx)idx
 }
 
-get_neigbor_pos_in_chunk :: proc "contextless" (
-	chunk_pos: [3]u32,
-	face: Face,
-) -> (
-	pos: [3]int = {},
-	in_chunk: bool = true,
-) {
+get_neighbor_pos :: proc "contextless" (chunk_pos: [3]u32, face: Face) -> [3]i64 {
 	ipos := linalg.array_cast(chunk_pos, i64)
 	switch face {
 	case Face.NegZ:
@@ -347,6 +343,48 @@ get_neigbor_pos_in_chunk :: proc "contextless" (
 	case Face.PosX:
 		ipos.x += 1
 	}
+
+	return ipos
+}
+
+get_pos_in_neighbor_chunk :: proc "contextless" (
+	chunk_pos: [3]u32,
+	face: Face,
+) -> (
+	pos: [3]int,
+	neighbor_chunk_offset: [3]i32 = {0, 0, 0},
+	in_neighbor: bool,
+) {
+	ipos := get_neighbor_pos(chunk_pos, face)
+
+	sizes := [3]i64{CHUNK_WIDTH, CHUNK_HEIGHT, CHUNK_WIDTH}
+
+	for i in 0 ..< 3 {
+		size := sizes[i]
+
+		if ipos[i] < 0 {
+			ipos[i] += size
+			neighbor_chunk_offset[i] = -1
+			in_neighbor = true
+		} else if ipos[i] >= size {
+			ipos[i] -= size
+			neighbor_chunk_offset[i] = 1
+			in_neighbor = true
+		}
+	}
+
+	pos = linalg.array_cast(ipos, int)
+	return
+}
+
+get_neigbor_pos_in_chunk :: proc "contextless" (
+	chunk_pos: [3]u32,
+	face: Face,
+) -> (
+	pos: [3]int = {},
+	in_chunk: bool = true,
+) {
+	ipos := get_neighbor_pos(chunk_pos, face)
 
 	#unroll for coord, i in ipos {
 		if coord < 0 {
@@ -430,6 +468,7 @@ create_cube :: proc(
 		engine: ^VulkanEngine,
 		chunk_builder: ^ChunkBuilder,
 		chunk: ^Chunk,
+		chunk_pos: [3]i32,
 		in_chunk_position: [3]u32,
 	) {
 		context = engine.ctx
@@ -438,7 +477,7 @@ create_cube :: proc(
 		vertices_count := 0
 		indices: [36]u32 // = make([dynamic]u32, 0, len(baseIndices))
 		indices_count := 0
-		max_index := chunk_builder.start_index
+		max_index := cast(u32)len(chunk_builder.vertices)
 
 		for face in 0 ..< 6 {
 			neighbor_pos, in_chunk := get_neigbor_pos_in_chunk(in_chunk_position, cast(Face)face)
@@ -446,6 +485,21 @@ create_cube :: proc(
 				neigbor := chunk.blocks[chunk_calc_index(neighbor_pos)]
 				if neigbor.block_id != 0 {
 					continue
+				}
+			} else {
+				pos_in_neighbor, neighbor_offset, in_neighbor := get_pos_in_neighbor_chunk(
+					in_chunk_position,
+					cast(Face)face,
+				)
+				if in_neighbor {
+					neighbor_chunk_pos := chunk_pos + neighbor_offset
+					neighbor_chunk, ok := &engine.chunks[neighbor_chunk_pos]
+					if ok {
+						neigbor := neighbor_chunk.blocks[chunk_calc_index(pos_in_neighbor)]
+						if neigbor.block_id != 0 {
+							continue
+						}
+					}
 				}
 			}
 

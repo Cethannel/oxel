@@ -7,6 +7,7 @@ const int CHUNK_HEIGHT = 256;
 
 layout (location = 0) out vec3 outColor;
 layout (location = 1) out vec2 outUV;
+layout (location = 2) out vec3 outNormal;
 
 struct ModelEntry {
 	vec3 position;
@@ -55,5 +56,6 @@ void main()
 	outColor = model.color.xyz;
 	outUV.x = model.uv_x;
 	outUV.y = model.uv_y;
+	outNormal = model.normal;
 }
 

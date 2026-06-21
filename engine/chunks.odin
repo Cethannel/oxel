@@ -81,7 +81,14 @@ chunk_mesh_gen :: proc(engine: ^VulkanEngine, chunk: ^Chunk, pos: [3]i32) -> Chu
 				block := chunk.blocks[idx]
 				if block.block_id == 0 {continue}
 				blk_data := &engine.blocks[block.block_id]
-				blk_data.vtable.populate_chunk(blk_data, engine, &chunk_builder, chunk, {x, y, z})
+				blk_data.vtable.populate_chunk(
+					blk_data,
+					engine,
+					&chunk_builder,
+					chunk,
+					pos,
+					{x, y, z},
+				)
 			}
 		}
 	}
@@ -101,9 +108,9 @@ chunk_mesh_render :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	projection := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
 
 	view := linalg.matrix4_look_at_f32(
-	engine.camera_pos, // eye
-	{0, 0, 0}, // center (or a look target)
-	{0, 1, 0}, // up
+		engine.camera_pos, // eye
+		{0, 0, 0}, // center (or a look target)
+		{0, 1, 0}, // up
 	)
 
 

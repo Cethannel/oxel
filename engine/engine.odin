@@ -28,6 +28,8 @@ import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
 
 print_resize :: true
 
+print_chunks :: false
+
 DeinitFunc :: proc(engine: ^VulkanEngine)
 FrameDeinitFunc :: proc(engine: ^VulkanEngine, frame_data: ^FrameData)
 
@@ -152,6 +154,7 @@ VulkanEngine :: struct {
 	chunks:                         map[[3]i32]Chunk,
 	chunks_to_gen:                  [dynamic][3]i32,
 	meshes_to_gen:                  [dynamic][3]i32,
+	frames_since_lance_gen:         u32,
 
 	// :model
 	model_buffer:                   AllocatedBuffer,
@@ -305,26 +308,35 @@ run :: proc(engine: ^VulkanEngine) {
 				break
 			}
 			pos := pop(&engine.chunks_to_gen)
-			log.infof("Genertating: %v", pos)
+			if print_chunks {
+				log.infof("Genertating: %v", pos)
+			}
 			engine.chunks[pos] = Chunk{}
 			chunk_gen(engine, &engine.chunks[pos], pos)
 			append(&engine.meshes_to_gen, pos)
 		}
 
 
-		mesh: if len(engine.meshes_to_gen) > 5 {
+		engine.frames_since_lance_gen += 1
+		mesh: if len(engine.meshes_to_gen) > 5 || engine.frames_since_lance_gen > 5 {
+			engine.frames_since_lance_gen = 0
 			BATCH_SIZE :: 32
 			poses: [BATCH_SIZE][3]i32
 			chunk_builders: [BATCH_SIZE]ChunkBuilder
 			len, coords := dynamic_array_drain(&engine.meshes_to_gen, poses[:])
 			for pos, idx in coords {
-				log.infof("Mesh for: %v", pos)
+				if print_chunks {
+					log.infof("Mesh for: %v", pos)
+				}
 				engine.chunk_meshes[pos] = ChunkMesh{}
 				chunk_builders[idx] = chunk_mesh_gen(engine, &engine.chunks[pos], pos)
 				shrink_dynamic_array(&chunk_builders[idx].indices)
 				shrink_dynamic_array(&chunk_builders[idx].vertices)
 			}
 
+			if len <= 0 {
+				break mesh
+			}
 			meshes, err := chunk_builder_build_batch(chunk_builders[:len], engine)
 			if err != nil {
 				log.errorf("Failed to build batch: %v", err)
@@ -334,7 +346,9 @@ run :: proc(engine: ^VulkanEngine) {
 			defer delete(meshes)
 
 			for pos, idx in coords {
-				log.infof("Uploading for: %v", pos)
+				if print_chunks {
+					log.infof("Uploading for: %v", pos)
+				}
 				defer chunk_builder_deinit(&chunk_builders[idx])
 				engine.chunk_meshes[pos] = meshes[idx]
 			}
@@ -2117,7 +2131,7 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	MAKE_SIZE :: 64
+	MAKE_SIZE :: 16
 
 	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
 	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
