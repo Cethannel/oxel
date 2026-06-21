@@ -428,10 +428,14 @@ create_cube :: proc(
 		context = engine.ctx
 		cube := cast(^CubeData)block.userdata
 
-		log.infof("Registering block(%s) texture: %s", cube.name, cube.path)
+		base_block_path :: "assets/untrached/Faithful/assets/minecraft/textures/blocks"
+
+		path := fmt.aprintf("%s/%s", base_block_path, cube.path)
+
+		log.infof("Registering block(%s) texture: %s", cube.name, path)
 
 		assert(
-			atlas_builder_register_texture(atlas_builder, cube.name, cube.path, cube.texture_size),
+			atlas_builder_register_texture(atlas_builder, cube.name, path, cube.texture_size),
 			"Failed to register texture",
 		)
 	}

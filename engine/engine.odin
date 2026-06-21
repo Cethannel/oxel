@@ -318,7 +318,8 @@ run :: proc(engine: ^VulkanEngine) {
 
 
 		engine.frames_since_lance_gen += 1
-		mesh: if len(engine.meshes_to_gen) > 5 || engine.frames_since_lance_gen > 5 {
+		mesh: if (len(engine.meshes_to_gen) > 5 || engine.frames_since_lance_gen > 5) &&
+		   len(engine.meshes_to_gen) > 0 {
 			engine.frames_since_lance_gen = 0
 			BATCH_SIZE :: 32
 			poses: [BATCH_SIZE][3]i32
@@ -334,9 +335,6 @@ run :: proc(engine: ^VulkanEngine) {
 				shrink_dynamic_array(&chunk_builders[idx].vertices)
 			}
 
-			if len <= 0 {
-				break mesh
-			}
 			meshes, err := chunk_builder_build_batch(chunk_builders[:len], engine)
 			if err != nil {
 				log.errorf("Failed to build batch: %v", err)
@@ -2051,24 +2049,9 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	append(&engine.blocks, Air)
 
-	register_cube(
-		engine,
-		"stone",
-		"assets/untrached/Faithful/assets/minecraft/textures/blocks/stone.png",
-		32,
-	)
-	register_cube(
-		engine,
-		"dirt",
-		"assets/untrached/Faithful/assets/minecraft/textures/blocks/dirt.png",
-		32,
-	)
-	register_cube(
-		engine,
-		"planks_oak",
-		"assets/untrached/Faithful/assets/minecraft/textures/blocks/planks_oak.png",
-		32,
-	)
+	register_cube(engine, "stone", "stone.png", 32)
+	register_cube(engine, "dirt", "dirt.png", 32)
+	register_cube(engine, "planks_oak", "planks_oak.png", 32)
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		for &block in engine.blocks {
@@ -2131,7 +2114,7 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	MAKE_SIZE :: 16
+	MAKE_SIZE :: 32
 
 	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
 	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
