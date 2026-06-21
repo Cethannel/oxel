@@ -315,13 +315,45 @@ Air :: Block {
 }
 
 CubeData :: struct {
-	name:         string,
-	path:         string,
-	texture_size: u32,
+	name:    string,
+	texture: CubeTexture,
 }
 
-register_cube :: proc(engine: ^VulkanEngine, name: string, texture: string, texture_size: u32) {
-	cube := create_cube(engine, name, texture, texture_size)
+CubeTexture :: struct {
+	paths: [Face]string,
+	size:  u32,
+}
+
+make_texture :: proc(
+	top: string,
+	bottom: string = "",
+	positive_x: string = "",
+	negative_x: string = "",
+	positive_z: string = "",
+	negative_z: string = "",
+	size: u32 = 32,
+) -> CubeTexture {
+	bottom := bottom if bottom != "" else top
+	positive_x := positive_x if positive_x != "" else top
+	negative_x := negative_x if negative_x != "" else positive_x
+	positive_z := positive_z if positive_z != "" else positive_x
+	negative_z := negative_z if negative_z != "" else positive_z
+
+	return {
+		paths = {
+			.PosY = top,
+			.NegY = bottom,
+			.PosX = positive_x,
+			.NegX = negative_x,
+			.PosZ = positive_z,
+			.NegZ = negative_z,
+		},
+		size = size,
+	}
+}
+
+register_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) {
+	cube := create_cube(engine, name, texture)
 	idx := len(engine.blocks)
 	append(&engine.blocks, cube)
 	engine.blocks_map[name] = cast(BlockIdx)idx
@@ -408,18 +440,17 @@ get_neigbor_pos_in_chunk :: proc "contextless" (
 	return
 }
 
-create_cube :: proc(
-	engine: ^VulkanEngine,
-	name: string,
-	texture: string,
-	texture_size: u32,
-) -> Block {
+qualify_block_texture_path :: proc(path: string) -> string {
+	base_block_path :: "assets/untrached/Faithful/assets/minecraft/textures/blocks"
+	return fmt.aprintf("%s/%s", base_block_path, path)
+}
+
+create_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) -> Block {
 	block: Block
 
 	data := new(CubeData)
-	data.path = texture
+	data.texture = texture
 	data.name = name
-	data.texture_size = texture_size
 
 	block.userdata = data
 
@@ -428,16 +459,19 @@ create_cube :: proc(
 		context = engine.ctx
 		cube := cast(^CubeData)block.userdata
 
-		base_block_path :: "assets/untrached/Faithful/assets/minecraft/textures/blocks"
+		for path in cube.texture.paths {
+			already_exists := false
+			full_path := qualify_block_texture_path(path)
+			defer if already_exists {delete(full_path)}
 
-		path := fmt.aprintf("%s/%s", base_block_path, cube.path)
+			already_exists = atlas_builder_register_texture(
+				atlas_builder,
+				full_path,
+				cube.texture.size,
+			)
 
-		log.infof("Registering block(%s) texture: %s", cube.name, path)
-
-		assert(
-			atlas_builder_register_texture(atlas_builder, cube.name, path, cube.texture_size),
-			"Failed to register texture",
-		)
+			log.infof("Registering block(%s) texture: %s", cube.name, full_path)
+		}
 	}
 
 	block.vtable.register_model =
@@ -450,13 +484,18 @@ create_cube :: proc(
 
 		append(&model.vertices, ..modelVertices[:])
 
-		i := engine.texture_atlas.texture_map[cube_data.name]
-
 		y_offset := (1.0 / cast(f32)len(engine.texture_atlas.texture_map))
-		for &vertex in model.vertices {
-			vertex.uv_x *= 1.0
-			vertex.uv_y *= y_offset
-			vertex.uv_y += y_offset * cast(f32)i
+		for face, i in cube_data.texture.paths {
+			full_path := qualify_block_texture_path(face)
+			defer delete(full_path)
+			texture_index := engine.texture_atlas.texture_map[full_path]
+
+			for j in 0 ..< 4 {
+				vertex := &model.vertices[cast(int)i * 4 + j]
+				vertex.uv_x *= 1.0
+				vertex.uv_y *= y_offset
+				vertex.uv_y += y_offset * cast(f32)texture_index
+			}
 		}
 
 		block.model_name = fmt.aprintf("cube/%s", cube_data.name)

@@ -1,6 +1,7 @@
 package engine
 
 import "core:math/linalg"
+import "core:time"
 import sdl2 "vendor:sdl2"
 
 Camera :: struct {
@@ -55,7 +56,8 @@ camera_process_sdl_event :: proc(self: ^Camera, event: ^sdl2.Event) {
 	}
 }
 
-camera_process_update :: proc(self: ^Camera) {
+camera_process_update :: proc(self: ^Camera, dt: time.Duration) {
 	camera_rotation := camera_get_rotation_matrix(self)
-	self.position += (camera_rotation * vec3_to_vec4(self.velocity * 0.5, 0.0)).xyz
+	self.position +=
+		(camera_rotation * vec3_to_vec4(self.velocity * cast(f32)time.duration_seconds(dt) * 5, 0.0)).xyz
 }

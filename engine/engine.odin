@@ -232,7 +232,13 @@ run :: proc(engine: ^VulkanEngine) {
 
 	quit := false
 
+	start := time.now()
+
 	for (!quit) {
+		new_start := time.now()
+		dt := time.diff(start, new_start)
+		start = new_start
+
 		for (sdl2.PollEvent(&e)) {
 			camera_process_sdl_event(&engine.main_camera, &e)
 			imgui_sdl2.ProcessEvent(&e)
@@ -352,11 +358,11 @@ run :: proc(engine: ^VulkanEngine) {
 			}
 		}
 
-		draw(engine)
+		draw(engine, dt)
 	}
 }
 
-draw :: proc(engine: ^VulkanEngine) {
+draw :: proc(engine: ^VulkanEngine, dt: time.Duration) {
 	vk_assert(
 		vk.WaitForFences(
 			engine.device.device,
@@ -435,7 +441,7 @@ draw :: proc(engine: ^VulkanEngine) {
 	transition_image(cmd, engine.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
 	transition_image(cmd, engine.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)
 
-	draw_geometry(engine, cmd)
+	draw_geometry(engine, cmd, dt)
 
 	//transition the draw image and the swapchain image into their correct transfer layouts
 	transition_image(
@@ -1576,7 +1582,7 @@ rendering_info :: proc(
 	return renderInfo
 }
 
-draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
+draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer, dt: time.Duration) {
 	colorAttachment := attachment_info(engine.draw_image.imageView, nil, .COLOR_ATTACHMENT_OPTIMAL)
 	depthAttachment := depth_attachment_info(
 		engine.depth_image.imageView,
@@ -1638,7 +1644,7 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	projection_from_view := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
 
-	camera_process_update(&engine.main_camera)
+	camera_process_update(&engine.main_camera, dt)
 
 	view_from_world := camera_get_view_matrix(&engine.main_camera)
 
@@ -2049,9 +2055,10 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	append(&engine.blocks, Air)
 
-	register_cube(engine, "stone", "stone.png", 32)
-	register_cube(engine, "dirt", "dirt.png", 32)
-	register_cube(engine, "planks_oak", "planks_oak.png", 32)
+	register_cube(engine, "stone", make_texture("stone.png"))
+	register_cube(engine, "dirt", make_texture("dirt.png"))
+	register_cube(engine, "planks_oak", make_texture("planks_oak.png"))
+	register_cube(engine, "log_oak", make_texture("log_oak_top.png", positive_x = "log_oak.png"))
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		for &block in engine.blocks {
@@ -2114,12 +2121,20 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.chunk_meshes)
 	})
 
-	MAKE_SIZE :: 32
+	clear(&engine.chunks_to_gen)
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		delete(engine.chunks_to_gen)
+	})
+
+	clear(&engine.meshes_to_gen)
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		delete(engine.meshes_to_gen)
+	})
+
+	MAKE_SIZE :: 4
 
 	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
 	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
-
-	clear(&engine.chunks_to_gen)
 	reserve(&engine.chunks_to_gen, MAKE_SIZE * MAKE_SIZE)
 
 	for x in 0 ..< MAKE_SIZE {

@@ -9,7 +9,7 @@ import "core:mem"
 import vk "vendor:vulkan"
 
 AtlasBuilder :: struct {
-	textures:         map[string]string,
+	textures:         [dynamic]string,
 	max_texture_size: u32,
 }
 
@@ -19,40 +19,36 @@ Atlas :: struct {
 	image:        AllocatedImage,
 }
 
-atlas_get_texture_offset :: proc(atlas: ^Atlas, texture_name: string) -> (offset: u32, ok: bool) {
-	offset, ok = atlas.texture_map[texture_name]
+atlas_get_texture_offset :: proc(atlas: ^Atlas, texture_path: string) -> (offset: u32, ok: bool) {
+	offset, ok = atlas.texture_map[texture_path]
 	return
 }
 
 atlas_builder_init :: proc(ab: ^AtlasBuilder, allocator := context.allocator) {
-	ab.textures = make(map[string]string)
+	ab.textures = make([dynamic]string)
 }
 
 atlas_builder_register_texture :: proc(
 	ab: ^AtlasBuilder,
-	name: string,
 	image_path: string,
 	size: u32,
 ) -> (
-	ok: bool,
+	already_exists: bool,
 ) {
-	value, has := ab.textures[name]
-	if has && value != image_path {
-		log.errorf(
-			"Reregistration of texture with different path\nPrevious: `%s`\nNew: `%s`",
-			value,
-			image_path,
-		)
-		return false
+	for path in ab.textures {
+		if image_path == path {
+			already_exists = true
+			return
+		}
 	}
 
-	ab.textures[name] = image_path
+	append(&ab.textures, image_path)
 
 	if size > ab.max_texture_size {
 		ab.max_texture_size = size
 	}
 
-	return true
+	return false
 }
 
 atlas_builder_build :: proc(
@@ -98,18 +94,18 @@ atlas_builder_build :: proc(
 	atlas.texture_map["null"] = 0
 
 	i: u32 = 1
-	for k, v in ab.textures {
+	for path in ab.textures {
 		defer i += 1
 
 		img: ^image.Image
-		img, err = image.load_from_file(v, {.alpha_add_if_missing}, allocator)
+		img, err = image.load_from_file(path, {.alpha_add_if_missing}, allocator)
 		if err != nil {
-			log.errorf("Failed to load image(%s): %e", v, err)
+			log.errorf("Failed to load image(%s): %e", path, err)
 			return
 		}
 		defer image.destroy(img, allocator)
 		if img.width != img.height {
-			log.errorf("Missmatch in width and height for: %s", v)
+			log.errorf("Missmatch in width and height for: %s", path)
 			log.errorf("Width: %d\nHeight:%d", img.width, img.height)
 			return
 		}
@@ -120,7 +116,7 @@ atlas_builder_build :: proc(
 			data[i * texture_len:][:texture_len],
 			ab.max_texture_size,
 		)
-		atlas.texture_map[k] = i
+		atlas.texture_map[path] = i
 	}
 
 	atlas.image, vk_err = create_image_with_data(
