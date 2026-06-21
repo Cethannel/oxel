@@ -18,6 +18,7 @@ import "core:fmt"
 import "core:math"
 import "core:time"
 
+import oab "../oab/"
 import vkb "../vkbootstrap/"
 
 import vma "../vma/"
@@ -102,7 +103,7 @@ VulkanEngine :: struct {
 	frame_number:                   int,
 	stop_rendering:                 bool,
 	window_extent:                  vk.Extent2D,
-	window:                         ^sdl2.Window,
+	window:                         oab.Window,
 	instance:                       ^vkb.Instance,
 	device:                         ^vkb.Device,
 	surface:                        vk.SurfaceKHR,
@@ -184,22 +185,20 @@ init :: proc() -> VulkanEngine {
 		frame_number   = 0,
 		window_extent  = {1700, 900},
 		stop_rendering = false,
-		window         = nil,
 		is_initialized = false,
 		ctx            = context,
 	}
 
-	assert(sdl2.Init(sdl2.InitFlags{.VIDEO}) == 0, "Failed to initalize SDL")
+	assert(oab.init(), "Failed to initalize OAB")
 
-	engine.window = sdl2.CreateWindow(
+	ok: bool
+	engine.window, ok = oab.create_window(
 		"VulkanEngine",
-		0,
-		0,
-		cast(c.int)engine.window_extent.width,
-		cast(c.int)engine.window_extent.height,
-		sdl2.WindowFlags{.VULKAN, .RESIZABLE},
+		{0, 0},
+		{engine.window_extent.width, engine.window_extent.height},
 	)
-	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {sdl2.DestroyWindow(engine.window)})
+	assert(ok, "Failed to create window")
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {oab.destroy_window(&engine.window)})
 
 	err := init_vulkan(&engine)
 	if err != nil {
@@ -556,7 +555,9 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 		proc(engine: ^VulkanEngine) {vkb.destroy_instance(engine.instance)},
 	)
 
-	assert(!!sdl2.Vulkan_CreateSurface(engine.window, engine.instance.instance, &engine.surface))
+	ok: bool
+	engine.surface, ok = oab.window_create_vulkan_surface(&engine.window, engine.instance.instance)
+	assert(ok, "Failed to creaete surface")
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		vk.DestroySurfaceKHR(engine.instance.instance, engine.surface, nil)
 	})
@@ -1452,7 +1453,7 @@ init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
 	imgui.CHECKVERSION()
 	imgui.CreateContext()
 
-	assert(imgui_sdl2.InitForVulkan(engine.window))
+	assert(oab.window_init_sdl2(&engine.window))
 
 	assert(
 		imgui_vulkan.LoadFunctions(
@@ -2181,10 +2182,7 @@ resize_swapchain :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	vk.DestroyImageView(engine.device.device, engine.depth_image.imageView, nil)
 	vma.destroy_image(engine.allocator, engine.depth_image.image, engine.depth_image.allocation)
 
-	w, h: c.int
-	sdl2.GetWindowSize(engine.window, &w, &h)
-	engine.window_extent.width = cast(u32)w
-	engine.window_extent.height = cast(u32)h
+	engine.window_extent.width, engine.window_extent.height = oab.window_get_size(engine.window)
 
 	create_swapchain(engine, engine.window_extent.width, engine.window_extent.height) or_return
 
