@@ -29,12 +29,14 @@ camera_get_rotation_matrix :: proc(self: ^Camera) -> matrix[4, 4]f32 {
 
 camera_process_sdl_event :: proc(self: ^Camera, event: ^sdl2.Event) {
 	if (event.type == .KEYDOWN) {
-		if (event.key.keysym.sym == .w) {self.velocity.z = -1}
-		if (event.key.keysym.sym == .s) {self.velocity.z = 1}
-		if (event.key.keysym.sym == .a) {self.velocity.x = -1}
-		if (event.key.keysym.sym == .d) {self.velocity.x = 1}
-		if (event.key.keysym.sym == .LSHIFT) {self.velocity.y = -1}
-		if (event.key.keysym.sym == .SPACE) {self.velocity.y = 1}
+		if (sdl2.GetRelativeMouseMode()) {
+			if (event.key.keysym.sym == .w) {self.velocity.z = -1}
+			if (event.key.keysym.sym == .s) {self.velocity.z = 1}
+			if (event.key.keysym.sym == .a) {self.velocity.x = -1}
+			if (event.key.keysym.sym == .d) {self.velocity.x = 1}
+			if (event.key.keysym.sym == .LSHIFT) {self.velocity.y = -1}
+			if (event.key.keysym.sym == .SPACE) {self.velocity.y = 1}
+		}
 
 		if (event.key.keysym.sym == .ESCAPE) {
 			sdl2.SetRelativeMouseMode(!sdl2.GetRelativeMouseMode())
@@ -42,12 +44,14 @@ camera_process_sdl_event :: proc(self: ^Camera, event: ^sdl2.Event) {
 	}
 
 	if (event.type == .KEYUP) {
-		if (event.key.keysym.sym == .w) {self.velocity.z = 0}
-		if (event.key.keysym.sym == .s) {self.velocity.z = 0}
-		if (event.key.keysym.sym == .a) {self.velocity.x = 0}
-		if (event.key.keysym.sym == .d) {self.velocity.x = 0}
-		if (event.key.keysym.sym == .LSHIFT) {self.velocity.y = 0}
-		if (event.key.keysym.sym == .SPACE) {self.velocity.y = 0}
+		if (sdl2.GetRelativeMouseMode()) {
+			if (event.key.keysym.sym == .w) {self.velocity.z = 0}
+			if (event.key.keysym.sym == .s) {self.velocity.z = 0}
+			if (event.key.keysym.sym == .a) {self.velocity.x = 0}
+			if (event.key.keysym.sym == .d) {self.velocity.x = 0}
+			if (event.key.keysym.sym == .LSHIFT) {self.velocity.y = 0}
+			if (event.key.keysym.sym == .SPACE) {self.velocity.y = 0}
+		}
 	}
 
 	if (sdl2.GetRelativeMouseMode() && event.type == .MOUSEMOTION) {

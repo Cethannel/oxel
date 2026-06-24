@@ -21,10 +21,10 @@ load_shader_module :: proc(
 	filePath: string,
 	device: vk.Device,
 ) -> (
-	shader_module: vk.ShaderModule,
-	err: LoadShaderError,
+	shader_module: vk.ShaderModule = 0,
+	err: LoadShaderError = nil,
 ) {
-	log.info("Loading shader: %s", filePath)
+	log.infof("Loading shader: %s", filePath)
 
 	file: ^os.File
 	file, err = os.open(filePath)
@@ -51,11 +51,9 @@ load_shader_module :: proc(
 	createInfo.codeSize = len(buffer) * size_of(u32)
 	createInfo.pCode = raw_data(buffer)
 
-	shader_module = 0
-
 	vkb.vk_check(vk.CreateShaderModule(device, &createInfo, nil, &shader_module)) or_return
 
-	return shader_module, nil
+	return
 }
 
 pipeline_shader_stage_create_info :: proc(

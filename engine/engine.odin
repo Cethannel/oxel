@@ -168,6 +168,9 @@ VulkanEngine :: struct {
 
 	//
 	texture_atlas:                  Atlas,
+
+	//
+	render_distance:                i32,
 }
 
 ComputePushConstants :: struct {
@@ -182,11 +185,12 @@ bEnableValidationLayers := true
 
 init :: proc() -> VulkanEngine {
 	engine := VulkanEngine {
-		frame_number   = 0,
-		window_extent  = {1700, 900},
-		stop_rendering = false,
-		is_initialized = false,
-		ctx            = context,
+		frame_number    = 0,
+		window_extent   = {1700, 900},
+		stop_rendering  = false,
+		is_initialized  = false,
+		ctx             = context,
+		render_distance = 8,
 	}
 
 	assert(oab.init(), "Failed to initalize OAB")
@@ -314,6 +318,10 @@ run :: proc(engine: ^VulkanEngine) {
 				break
 			}
 			pos := pop(&engine.chunks_to_gen)
+			_, ok := engine.chunks[pos]
+			if ok {
+				continue
+			}
 			if print_chunks {
 				log.infof("Genertating: %v", pos)
 			}
@@ -358,11 +366,15 @@ run :: proc(engine: ^VulkanEngine) {
 			}
 		}
 
-		draw(engine, dt)
+		gen_in_render_distance(engine)
+
+		camera_process_update(&engine.main_camera, dt)
+
+		draw(engine)
 	}
 }
 
-draw :: proc(engine: ^VulkanEngine, dt: time.Duration) {
+draw :: proc(engine: ^VulkanEngine) {
 	vk_assert(
 		vk.WaitForFences(
 			engine.device.device,
@@ -419,8 +431,6 @@ draw :: proc(engine: ^VulkanEngine, dt: time.Duration) {
 
 	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
-	//engine.draw_extent.width = engine.draw_image.image_extent.width
-	//engine.draw_extent.height = engine.draw_image.image_extent.height
 	engine.draw_extent.height =
 	cast(u32)(cast(f32)(min(
 				engine.swapchain_extent.height,
@@ -441,7 +451,7 @@ draw :: proc(engine: ^VulkanEngine, dt: time.Duration) {
 	transition_image(cmd, engine.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
 	transition_image(cmd, engine.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)
 
-	draw_geometry(engine, cmd, dt)
+	draw_geometry(engine, cmd)
 
 	//transition the draw image and the swapchain image into their correct transfer layouts
 	transition_image(
@@ -1582,7 +1592,7 @@ rendering_info :: proc(
 	return renderInfo
 }
 
-draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer, dt: time.Duration) {
+draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	colorAttachment := attachment_info(engine.draw_image.imageView, nil, .COLOR_ATTACHMENT_OPTIMAL)
 	depthAttachment := depth_attachment_info(
 		engine.depth_image.imageView,
@@ -1643,8 +1653,6 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer, dt: time.Dur
 	near: f32 = 0.01
 
 	projection_from_view := matrix4_perspective_reverse_z_infinite_f32(fov, aspect, near, true)
-
-	camera_process_update(&engine.main_camera, dt)
 
 	view_from_world := camera_get_view_matrix(&engine.main_camera)
 
@@ -2100,10 +2108,10 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 		delete(engine.model_index_map)
 	})
 
-	log.infof("Got index map:\n")
+	log.infof("Got index map:")
 
 	for name, value in model_starts {
-		log.infof("%s: %d\n", name, value)
+		log.infof("  %s: %d", name, value)
 	}
 
 	assert(len(model_vertices) > 0)
@@ -2133,18 +2141,18 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	MAKE_SIZE :: 4
 
-	reserve(&engine.chunks, MAKE_SIZE * MAKE_SIZE)
-	reserve(&engine.chunk_meshes, MAKE_SIZE * MAKE_SIZE)
-	reserve(&engine.chunks_to_gen, MAKE_SIZE * MAKE_SIZE)
+	reserve(&engine.chunks, engine.render_distance * engine.render_distance * 2)
+	reserve(&engine.chunk_meshes, engine.render_distance * engine.render_distance * 2)
+	reserve(&engine.chunks_to_gen, engine.render_distance * engine.render_distance * 2)
 
-	for x in 0 ..< MAKE_SIZE {
-		for z in 0 ..< MAKE_SIZE {
-			pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
-			append(&engine.chunks_to_gen, pos)
-			//map_insert(&engine.chunks, pos, Chunk{})
-			//map_insert(&engine.chunk_meshes, pos, ChunkMesh{})
-		}
-	}
+	//for x in 0 ..< MAKE_SIZE {
+	//	for z in 0 ..< MAKE_SIZE {
+	//		pos: [3]i32 = {cast(i32)x, 0, cast(i32)z}
+	//		append(&engine.chunks_to_gen, pos)
+	//		//map_insert(&engine.chunks, pos, Chunk{})
+	//		//map_insert(&engine.chunk_meshes, pos, ChunkMesh{})
+	//	}
+	//}
 
 	create_upload_infos := [?]BufferCreateUploadInfo {
 		buffer_create_upload_info(

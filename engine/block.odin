@@ -470,7 +470,9 @@ create_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) -
 				cube.texture.size,
 			)
 
-			log.infof("Registering block(%s) texture: %s", cube.name, full_path)
+			if !already_exists {
+				log.infof("Registering block(%s) texture: %s", cube.name, full_path)
+			}
 		}
 	}
 
