@@ -1,6 +1,7 @@
 package oab
 
 import "core:c"
+import "core:log"
 import "core:strings"
 import sdl2 "vendor:sdl2"
 
@@ -38,6 +39,9 @@ create_window :: proc(
 
 	if window.sdl_window != nil {
 		ok = true
+	} else {
+		msg := sdl2.GetError()
+		log.errorf("Failed to get window: %s", msg)
 	}
 
 	return
@@ -59,7 +63,7 @@ window_create_vulkan_surface :: proc(
 	return
 }
 
-window_init_sdl2 :: proc(window: ^Window) -> bool {
+window_init_imgui :: proc(window: ^Window) -> bool {
 	return imgui_sdl2.InitForVulkan(window.sdl_window)
 }
 

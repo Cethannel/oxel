@@ -1469,7 +1469,7 @@ init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
 	imgui.CHECKVERSION()
 	imgui.CreateContext()
 
-	assert(oab.window_init_sdl2(&engine.window))
+	assert(oab.window_init_imgui(&engine.window))
 
 	assert(
 		imgui_vulkan.LoadFunctions(

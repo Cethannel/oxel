@@ -5,12 +5,14 @@ run: build
     ./oxel
 
 shaders:
-    cd shaders && ./compile.sh
+    cd shaders && bash ./compile.sh
 
-[working-directory('vma')]
 build_vma:
-    nix develop --command bash -c 'premake5 --vk-version=3 gmake'
-    cd build/make/linux && make
+    cd vma && premake5 --vk-version=3 gmake
+    cd vma/build/make/linux && make
+
+build_imgui:
+    cd vendor/gitlab.com/L-4/odin-imgui && python3 build.py
 
 nix_gdb_run: build
     __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only gdb --args ./oxel
