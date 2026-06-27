@@ -241,6 +241,7 @@ gen_in_render_distance :: proc(engine: ^VulkanEngine) {
 		for z in 0 ..< engine.render_distance {
 			offset := [3]i32{x, 0, z}
 			chunk_pos := player_chunk_pos + offset
+			chunk_pos.y = 0
 
 			_, ok := engine.chunks[chunk_pos]
 			if !ok {

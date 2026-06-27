@@ -355,6 +355,9 @@ run :: proc(engine: ^VulkanEngine) {
 				append(&engine.chunks_to_gen, ..coords)
 				break mesh
 			}
+			for mesh in meshes {
+				assert(mesh.meshBuffers.indexBuffer.buffer != 0)
+			}
 			defer delete(meshes)
 
 			for pos, idx in coords {
@@ -1657,6 +1660,10 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	view_from_world := camera_get_view_matrix(&engine.main_camera)
 
 	for pos, chunk_mesh in engine.chunk_meshes {
+		if chunk_mesh.size == 0 {
+			continue
+		}
+
 		world_from_model := linalg.matrix4_translate_f32(chunk_pos_to_world_pos(pos, f32))
 
 		// MVP in the order the shader expects (usually column-major)
@@ -1675,7 +1682,12 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 			&push_constants,
 		)
 
-		vk.CmdBindIndexBuffer(cmd, chunk_mesh.meshBuffers.indexBuffer.buffer, 0, .UINT32)
+		vk.CmdBindIndexBuffer(
+			cmd,
+			chunk_mesh.meshBuffers.indexBuffer.buffer,
+			0, // Offset
+			.UINT32,
+		)
 
 		vk.CmdDrawIndexed(
 			cmd,

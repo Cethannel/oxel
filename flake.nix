@@ -23,33 +23,117 @@
       ];
 
 			nativeBuildInputs = with pkgs; [
-          odin
-          glslang
-          premake5
-					just
-					git
-					bash
-					parallel
-					python3
-					python3Packages.ply
-					clang
-					lldWrapper
-					ripgrep
-					eza
+				odin
+				glslang
+				just
+				git
+				bash
+				clang
+				lldWrapper
+				ripgrep
+				eza
 			];
 
 			vmaSrc = pkgs.fetchFromGitHub {
         owner = "GPUOpen-LibrariesAndSDKs";
         repo = "VulkanMemoryAllocator";
-        rev = "v3.3.0";                    # Update this if you want a newer tag
-        sha256 = "sha256-TPEqV8uHbnyphLG0A+b2tgLDQ6K7a2dOuDHlaFPzTeE="; # ← Nix will tell you the real hash
+        rev = "v3.3.0";
+        sha256 = "sha256-TPEqV8uHbnyphLG0A+b2tgLDQ6K7a2dOuDHlaFPzTeE=";
       };
 
 			vulkanHeadersSrc = pkgs.fetchFromGitHub {
         owner = "KhronosGroup";
         repo = "Vulkan-Headers";
-        rev = "v1.4.337";                    # Update this if you want a newer tag
-        sha256 = "sha256-+adxYPqiOQelDru1R+8feOq3G+VKf5PqtffQYEGmfjQ="; # ← Nix will tell you the real hash
+        rev = "v1.4.337";
+        sha256 = "sha256-+adxYPqiOQelDru1R+8feOq3G+VKf5PqtffQYEGmfjQ=";
+      };
+
+			vma = pkgs.stdenv.mkDerivation {
+				pname = "vma";
+        version = "3.3.0";
+
+        src = ./vma;
+
+        dontConfigure = true;
+
+				buildInputs = with pkgs; [
+					vulkan-loader
+					vulkan-headers
+				];
+
+				nativeBuildInputs = with pkgs; [
+					premake5
+					git
+				];
+
+				postUnpack = ''
+					mkdir -p $sourceRoot/build/deps/vma
+					cp -r ${vmaSrc}/* $sourceRoot/build/deps/vma
+					chmod -R u+w $sourceRoot/build/deps/vma
+
+					mkdir -p $sourceRoot/build/deps/vulkan_headers
+					cp -r ${vulkanHeadersSrc}/* $sourceRoot/build/deps/vulkan_headers
+					chmod -R u+w $sourceRoot/build/deps/vulkan_headers
+				'';
+
+        buildPhase = ''
+					premake5 --vk-version=3 gmake
+					pushd build/make/linux
+					make -j 32
+					popd
+        '';
+
+        installPhase = ''
+          mkdir -p $out/lib
+          cp libvma_linux_x86_64.a $out/lib
+          # If you actually build a static lib with just build_vma, put it here
+        '';
+			};
+
+			imgui = pkgs.stdenv.mkDerivation {
+        pname = "imgui";
+        version = "unstable";
+
+        src = ./.;
+
+        nativeBuildInputs = with pkgs; [
+					just
+					python3
+					python3Packages.ply
+					clang
+				];
+
+				buildInputs = with pkgs; [
+					vulkan-headers
+				];
+
+        buildPhase = ''
+          just build_imgui
+        '';
+
+        installPhase = ''
+          mkdir -p $out/lib
+          cp -r vendor/gitlab.com/L-4/odin-imgui/imgui_linux_x64.a $out/lib/ 2>/dev/null || true
+          # adjust path as needed
+        '';
+      };
+
+			shaders = pkgs.stdenv.mkDerivation {
+        pname = "oxel-shaders";
+        version = "0.1";
+
+        src = ./.;
+
+        nativeBuildInputs = with pkgs; [ just glslang parallel ];
+
+        buildPhase = ''
+          just shaders
+        '';
+
+        installPhase = ''
+          mkdir -p $out/share/shaders
+          cp -r shaders/* $out/share/shaders/ 2>/dev/null || true
+        '';
       };
 
       # Odin emits -l:/abs/path.a for foreign imports, but linkers treat -l: as a
@@ -86,42 +170,38 @@
 
 					dontStrip = true;
 
-					postUnpack = ''
-						mkdir -p $sourceRoot/vma/build/deps/vma
-            cp -r ${vmaSrc}/* $sourceRoot/vma/build/deps/vma
-            chmod -R u+w $sourceRoot/vma/build/deps/vma
-						mkdir -p $sourceRoot/vma/build/deps/vulkan_headers
-            cp -r ${vulkanHeadersSrc}/* $sourceRoot/vma/build/deps/vulkan_headers
-            chmod -R u+w $sourceRoot/vma/build/deps/vulkan_headers
-          '';
-
 					buildPhase = ''
 						set -euo pipefail
 
-            echo "=== Building VMA ==="
-            just build_vma
+            echo "=== Using cached VMA ==="
+						# Copy from cached derivation if needed
+						mkdir -p vma/build/deps/vma
+						ls ${vma}/lib/*
+						cp -r ${vma}/lib/* vma || true
 
-            echo "=== Building imgui ==="
-            just build_imgui
+						echo "=== Using cached imgui ==="
+						# Link or copy cached imgui
+						cp -r ${imgui}/lib/* vendor/gitlab.com/L-4/odin-imgui/
 
-						ls -lah vma/ vendor/gitlab.com/L-4/odin-imgui/   # debug
+						echo "=== Using cached shaders ==="
+						mkdir -p shaders
+						cp -r ${shaders}/share/shaders/* shaders/ || true
 
-						rg imgui_linux_x64.a
-
-  echo "=== Compiling shaders ==="
-  just shaders
-
-  echo "=== Building Odin ==="
-  odin build . -out:oxel \
-    -extra-linker-flags="-fuse-ld=${lldWrapper}/bin/ld.lld -v"
+						echo "=== Building Odin ==="
+						odin build . -out:oxel \
+							-extra-linker-flags="-fuse-ld=${lldWrapper}/bin/ld.lld -v"
 					'';
 
 					installPhase = ''
 						mkdir -p $out/bin
+
 						cp oxel $out/bin/oxel
+					'';
+
+					postFixup = ''
 						wrapProgram $out/bin/oxel \
-							--set LD_LIBRARY_PATH ${pkgs.lib.makeLibraryPath runtimeLibs} \
-							--set VK_LAYER_PATH ${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d
+              --set LD_LIBRARY_PATH "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}" \
+              --set VK_LAYER_PATH "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d"
 					'';
 				};
 				default = self.packages.${system}.oxel;
