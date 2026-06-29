@@ -11,27 +11,14 @@
       pkgs = import nixpkgs { inherit system; };
 
       runtimeLibs = with pkgs; [
-        vulkan-loader
-        vulkan-headers
         SDL2
-        sdl3
         stdenv.cc.cc.lib
         libcxx
-        libGL
 				libllvm
-        imgui
       ];
 
 			nativeBuildInputs = with pkgs; [
 				odin
-				glslang
-				just
-				git
-				bash
-				clang
-				lldWrapper
-				ripgrep
-				eza
 			];
 
 			vmaSrc = pkgs.fetchFromGitHub {
@@ -218,14 +205,6 @@
 
         buildInputs = runtimeLibs ++ (with pkgs; [
           SDL2.dev
-          sdl3.dev
-          libX11
-          libXrandr
-          libXinerama
-          libXcursor
-          libXi
-          wayland
-          libxkbcommon
         ]);
 
         LD_LIBRARY_PATH = "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}";
