@@ -136,6 +136,8 @@ VulkanEngine :: struct {
 	imm_fence:                      vk.Fence,
 	imm_command_buffer:             vk.CommandBuffer,
 	imm_command_pool:               vk.CommandPool,
+	worker_imm_command_buffer:      vk.CommandBuffer,
+	worker_imm_command_pool:        vk.CommandPool,
 	imgui_pool:                     vk.DescriptorPool,
 
 	//
@@ -364,7 +366,6 @@ run :: proc(engine: ^VulkanEngine) {
 				if i == 0 {
 					log.infof("Getting meshes")
 				}
-				log.infof("Got mesh at: %v", msg.pos)
 				mesh, found := engine.chunk_meshes[msg.pos]
 				if found {
 					chunk_mesh_delete(engine, &mesh)
@@ -842,6 +843,30 @@ init_commands :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 			vk.DestroyCommandPool(engine.device.device, engine.imm_command_pool, nil)
+		})
+	}
+
+	{
+		worker_pool_info := command_pool_create_info(
+			engine.worker_thread_queue_family,
+			flags = {.RESET_COMMAND_BUFFER},
+		)
+		vk.CreateCommandPool(
+			engine.device.device,
+			&worker_pool_info,
+			nil,
+			&engine.worker_imm_command_pool,
+		) or_return
+
+		workerCmdAllocInfo := command_buffer_alloc_info(engine.worker_imm_command_pool)
+		vk.AllocateCommandBuffers(
+			engine.device.device,
+			&workerCmdAllocInfo,
+			&engine.worker_imm_command_buffer,
+		) or_return
+
+		append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+			vk.DestroyCommandPool(engine.device.device, engine.worker_imm_command_pool, nil)
 		})
 	}
 
@@ -1523,11 +1548,17 @@ init_imgui :: proc(engine: ^VulkanEngine) -> vk.Result {
 	return nil
 }
 
-immediate_start :: proc(engine: ^VulkanEngine) -> (cmd: vk.CommandBuffer, err: vk.Result) {
+immediate_start :: proc(
+	engine: ^VulkanEngine,
+	worker: bool = false,
+) -> (
+	cmd: vk.CommandBuffer,
+	err: vk.Result,
+) {
 	vk.ResetFences(engine.device.device, 1, &engine.imm_fence) or_return
-	vk.ResetCommandBuffer(engine.imm_command_buffer, {}) or_return
 
-	cmd = engine.imm_command_buffer
+	cmd = engine.worker_imm_command_buffer if worker else engine.imm_command_buffer
+	vk.ResetCommandBuffer(cmd, {}) or_return
 
 	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
@@ -1850,7 +1881,7 @@ create_and_upload_ssbo :: proc(
 	}
 
 	{
-		cmd := immediate_start(engine) or_return
+		cmd := immediate_start(engine, worker = true) or_return
 
 		offset = 0
 
