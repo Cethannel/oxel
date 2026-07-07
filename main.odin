@@ -26,7 +26,8 @@ main :: proc() {
 		}
 	}
 
-	vulk := engine.init()
+	vulk: engine.VulkanEngine = {}
+	engine.init(&vulk)
 	defer engine.cleanup(&vulk)
 
 	engine.run(&vulk)

@@ -233,20 +233,3 @@ world_to_chunk_pos :: proc(world_pos: [3]i32) -> (chunk_pos: [3]i32, in_chunk_po
 	chunk_pos.y = world_pos.y % CHUNK_HEIGHT
 	return
 }
-
-gen_in_render_distance :: proc(engine: ^VulkanEngine) {
-	player_chunk_pos, _ := world_to_chunk_pos(linalg.array_cast(engine.main_camera.position, i32))
-
-	for x in 0 ..< engine.render_distance {
-		for z in 0 ..< engine.render_distance {
-			offset := [3]i32{x, 0, z}
-			chunk_pos := player_chunk_pos + offset
-			chunk_pos.y = 0
-
-			_, ok := engine.chunks[chunk_pos]
-			if !ok {
-				append(&engine.chunks_to_gen, chunk_pos)
-			}
-		}
-	}
-}

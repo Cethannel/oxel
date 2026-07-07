@@ -21,6 +21,24 @@
 				odin
 			];
 
+			devShellBase = {
+				packages = with pkgs; [
+						ols
+						vulkan-tools
+						vulkan-validation-layers
+						bash
+						mangohud
+				] ++ nativeBuildInputs;
+
+        buildInputs = runtimeLibs ++ (with pkgs; [
+          SDL2.dev
+        ]);
+
+        LD_LIBRARY_PATH = "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}";
+
+        VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+			};
+
 			vmaSrc = pkgs.fetchFromGitHub {
         owner = "GPUOpen-LibrariesAndSDKs";
         repo = "VulkanMemoryAllocator";
@@ -194,22 +212,26 @@
 				default = self.packages.${system}.oxel;
 			};
 
-      devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [
-          ols
-          vulkan-tools
-          vulkan-validation-layers
-          bash
-          mangohud
-        ] ++ nativeBuildInputs;
+      devShells.${system} = {
+				default = pkgs.mkShell devShellBase;
+				nu = pkgs.mkShell (devShellBase // {
+          name = "oxel-nu-devshell";
 
-        buildInputs = runtimeLibs ++ (with pkgs; [
-          SDL2.dev
-        ]);
+          packages = devShellBase.packages ++ (with pkgs; [
+            nushell
+          ]);
 
-        LD_LIBRARY_PATH = "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}";
+          shellHook = ''
+            echo "========================================"
+            echo "🚀 Oxel Nushell Development Environment"
+            echo "========================================"
+            echo "Nushell version: $(nu --version)"
+            echo ""
 
-        VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
-      };
+            # Force exec nushell
+            exec ${pkgs.nushell}/bin/nu
+          '';
+        });
+			};
     };
 }

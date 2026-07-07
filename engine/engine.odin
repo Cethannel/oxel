@@ -8,6 +8,8 @@ import "core:log"
 import "core:math/linalg"
 import "core:mem"
 import "core:odin/tokenizer"
+import "core:sync"
+import "core:sync/chan"
 import "core:thread"
 import "core:unicode/utf16"
 import sdl2 "vendor:sdl2"
@@ -116,6 +118,8 @@ VulkanEngine :: struct {
 	frames:                         [FRAME_OVERLAP]FrameData,
 	graphics_queue:                 vk.Queue,
 	graphics_queue_family:          u32,
+	worker_thread_queue:            vk.Queue,
+	worker_thread_queue_family:     u32,
 	allocator:                      vma.Allocator,
 	draw_image:                     AllocatedImage,
 	depth_image:                    AllocatedImage,
@@ -166,6 +170,11 @@ VulkanEngine :: struct {
 	blocks_map:                     map[string]BlockIdx,
 	model_index_map:                map[string]ModelIndex,
 
+	// :threads
+	worker_thread:                  ^thread.Thread,
+	worker_args:                    WorkerThreadArgs,
+	mesh_chan:                      chan.Chan(MeshMessage),
+
 	//
 	texture_atlas:                  Atlas,
 
@@ -183,8 +192,8 @@ ComputePushConstants :: struct {
 @(private)
 bEnableValidationLayers := true
 
-init :: proc() -> VulkanEngine {
-	engine := VulkanEngine {
+init :: proc(engine: ^VulkanEngine) {
+	engine^ = VulkanEngine {
 		frame_number    = 0,
 		window_extent   = {1700, 900},
 		stop_rendering  = false,
@@ -204,29 +213,65 @@ init :: proc() -> VulkanEngine {
 	assert(ok, "Failed to create window")
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {oab.destroy_window(&engine.window)})
 
-	err := init_vulkan(&engine)
+	err := init_vulkan(engine)
 	if err != nil {
 		fmt.panicf("Failed to initalize vulkan: %v", err)
 	}
 
-	assert(init_swapchain(&engine) == nil, "Failed to initalize swapchain")
+	assert(init_swapchain(engine) == nil, "Failed to initalize swapchain")
 
-	assert(init_commands(&engine) == .SUCCESS, "Failed to initalize commands")
+	assert(init_commands(engine) == .SUCCESS, "Failed to initalize commands")
 
-	assert(init_sync_structures(&engine) == .SUCCESS, "Failed to initalize sync features")
+	assert(init_sync_structures(engine) == .SUCCESS, "Failed to initalize sync features")
 
-	init_descriptors(&engine)
+	init_descriptors(engine)
 
-	init_pipelines(&engine)
+	init_pipelines(engine)
 
-	assert(init_imgui(&engine) == .SUCCESS, "Failed to initialize imgui")
+	assert(init_imgui(engine) == .SUCCESS, "Failed to initialize imgui")
 
-	assert(init_default_data(&engine) == .SUCCESS, "Failed to init default data")
+	assert(init_default_data(engine) == .SUCCESS, "Failed to init default data")
+
+	assert(init_worker_thread(engine) == nil, "Failed to start worker thread")
 
 	engine.render_scale = 1.0
 	engine.is_initialized = true
+}
 
-	return engine
+init_worker_thread :: proc(engine: ^VulkanEngine) -> runtime.Allocator_Error {
+	err: runtime.Allocator_Error
+	engine.mesh_chan, err = chan.create_buffered(chan.Chan(MeshMessage), 1024, context.allocator)
+	if err != nil {
+		return err
+	}
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		chan.destroy(engine.mesh_chan)
+	})
+
+	engine.worker_args = WorkerThreadArgs {
+		engine         = engine,
+		should_run     = true,
+		mesh_send_chan = chan.as_send(engine.mesh_chan),
+	}
+
+	worker_thread_thunk :: proc(t: ^thread.Thread) {
+		worker_thread_proc(cast(^WorkerThreadArgs)t.data)
+	}
+	engine.worker_thread = thread.create(worker_thread_thunk)
+	assert(engine.worker_thread != nil)
+	engine.worker_thread.data = &engine.worker_args
+
+	thread.start(engine.worker_thread)
+
+	log.infof("Worker should be started")
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		sync.atomic_store(&engine.worker_args.should_run, false)
+
+		thread.destroy(engine.worker_thread)
+	})
+
+	return nil
 }
 
 run :: proc(engine: ^VulkanEngine) {
@@ -313,63 +358,22 @@ run :: proc(engine: ^VulkanEngine) {
 
 		imgui.Render()
 
-		for i in 0 ..< 6 {
-			if len(engine.chunks_to_gen) <= 0 {
+		for i in 0 ..< 32 {
+			msg, ok := chan.try_recv(engine.mesh_chan)
+			if ok {
+				if i == 0 {
+					log.infof("Getting meshes")
+				}
+				log.infof("Got mesh at: %v", msg.pos)
+				mesh, found := engine.chunk_meshes[msg.pos]
+				if found {
+					chunk_mesh_delete(engine, &mesh)
+				}
+				engine.chunk_meshes[msg.pos] = msg.mesh
+			} else {
 				break
 			}
-			pos := pop(&engine.chunks_to_gen)
-			_, ok := engine.chunks[pos]
-			if ok {
-				continue
-			}
-			if print_chunks {
-				log.infof("Genertating: %v", pos)
-			}
-			engine.chunks[pos] = Chunk{}
-			chunk_gen(engine, &engine.chunks[pos], pos)
-			append(&engine.meshes_to_gen, pos)
 		}
-
-
-		engine.frames_since_lance_gen += 1
-		mesh: if (len(engine.meshes_to_gen) > 5 || engine.frames_since_lance_gen > 5) &&
-		   len(engine.meshes_to_gen) > 0 {
-			engine.frames_since_lance_gen = 0
-			BATCH_SIZE :: 32
-			poses: [BATCH_SIZE][3]i32
-			chunk_builders: [BATCH_SIZE]ChunkBuilder
-			len, coords := dynamic_array_drain(&engine.meshes_to_gen, poses[:])
-			for pos, idx in coords {
-				if print_chunks {
-					log.infof("Mesh for: %v", pos)
-				}
-				engine.chunk_meshes[pos] = ChunkMesh{}
-				chunk_builders[idx] = chunk_mesh_gen(engine, &engine.chunks[pos], pos)
-				shrink_dynamic_array(&chunk_builders[idx].indices)
-				shrink_dynamic_array(&chunk_builders[idx].vertices)
-			}
-
-			meshes, err := chunk_builder_build_batch(chunk_builders[:len], engine)
-			if err != nil {
-				log.errorf("Failed to build batch: %v", err)
-				append(&engine.chunks_to_gen, ..coords)
-				break mesh
-			}
-			for mesh in meshes {
-				assert(mesh.meshBuffers.indexBuffer.buffer != 0)
-			}
-			defer delete(meshes)
-
-			for pos, idx in coords {
-				if print_chunks {
-					log.infof("Uploading for: %v", pos)
-				}
-				defer chunk_builder_deinit(&chunk_builders[idx])
-				engine.chunk_meshes[pos] = meshes[idx]
-			}
-		}
-
-		gen_in_render_distance(engine)
 
 		camera_process_update(&engine.main_camera, dt)
 
@@ -644,6 +648,13 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	engine.graphics_queue = vkb.device_get_queue(engine.device, .Graphics) or_return
 
 	engine.graphics_queue_family = vkb.device_get_queue_index(engine.device, .Graphics) or_return
+
+	engine.worker_thread_queue = vkb.device_get_queue(engine.device, .Transfer) or_return
+
+	engine.worker_thread_queue_family = vkb.device_get_queue_index(
+		engine.device,
+		.Transfer,
+	) or_return
 
 	assert(physical_device != nil)
 	assert(physical_device.physical_device != nil)
@@ -1525,14 +1536,23 @@ immediate_start :: proc(engine: ^VulkanEngine) -> (cmd: vk.CommandBuffer, err: v
 	return
 }
 
-immediate_submit :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) -> vk.Result {
+immediate_submit :: proc(
+	engine: ^VulkanEngine,
+	cmd: vk.CommandBuffer,
+	queue: vk.Queue = nil,
+) -> vk.Result {
 	vk.EndCommandBuffer(cmd) or_return
 
 	cmd_info := command_buffer_submit_info(cmd)
 
 	submit := submit_info(&cmd_info)
 
-	vk.QueueSubmit2(engine.graphics_queue, 1, &submit, engine.imm_fence) or_return
+	queue := queue
+	if queue == nil {
+		queue = engine.graphics_queue
+	}
+
+	vk.QueueSubmit2(queue, 1, &submit, engine.imm_fence) or_return
 
 	vk.WaitForFences(engine.device.device, 1, &engine.imm_fence, true, max(u64)) or_return
 
@@ -1845,7 +1865,7 @@ create_and_upload_ssbo :: proc(
 			offset += info.size
 		}
 
-		immediate_submit(engine, cmd) or_return
+		immediate_submit(engine, cmd, engine.worker_thread_queue) or_return
 	}
 
 	return nil
