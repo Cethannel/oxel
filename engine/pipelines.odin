@@ -111,11 +111,14 @@ pipeline_builder_set_shaders :: proc(
 ) {
 	clear(&pb.shaderStages)
 
-	append(&pb.shaderStages, pipeline_shader_stage_create_info({.VERTEX}, vertexShader, "main"))
+	append(
+		&pb.shaderStages,
+		pipeline_shader_stage_create_info({.VERTEX}, vertexShader, "vertexMain"),
+	)
 
 	append(
 		&pb.shaderStages,
-		pipeline_shader_stage_create_info({.FRAGMENT}, fragmentShader, "main"),
+		pipeline_shader_stage_create_info({.FRAGMENT}, fragmentShader, "fragmentMain"),
 	)
 }
 

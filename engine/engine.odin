@@ -439,14 +439,15 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
-	engine.draw_extent.height =
-	cast(u32)(cast(f32)(min(
+	engine.draw_extent.height = cast(u32)(cast(f32)(min(
 				engine.swapchain_extent.height,
 				engine.draw_image.imageExtent.height,
 			)) *
 		engine.render_scale)
-	engine.draw_extent.width =
-	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.imageExtent.width)) *
+	engine.draw_extent.width = cast(u32)(cast(f32)(min(
+				engine.swapchain_extent.width,
+				engine.draw_image.imageExtent.width,
+			)) *
 		engine.render_scale)
 
 
@@ -603,6 +604,7 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	features11: vk.PhysicalDeviceVulkan11Features = {
 		sType                    = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
 		storageBuffer16BitAccess = true, // comment out if not needed
+		shaderDrawParameters     = true,
 	}
 
 	features: vk.PhysicalDeviceFeatures = {
@@ -1402,13 +1404,13 @@ init_background_pipelines :: proc(engine: ^VulkanEngine) -> LoadShaderError {
 	})
 
 	gradient_shader := load_shader_module(
-		"shaders/gradient_color.comp.spv",
+		"shaders/gradient_color.spv",
 		engine.device.device,
 	) or_return
 
 	defer vk.DestroyShaderModule(engine.device.device, gradient_shader, nil)
 
-	sky_shader := load_shader_module("shaders/sky.comp.spv", engine.device.device) or_return
+	sky_shader := load_shader_module("shaders/sky.spv", engine.device.device) or_return
 
 	defer vk.DestroyShaderModule(engine.device.device, sky_shader, nil)
 
@@ -2035,26 +2037,14 @@ uploadMesh :: proc(
 
 init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	err: LoadShaderError = nil
-	triangleFragShader: vk.ShaderModule
-	triangleFragShader, err = load_shader_module(
-		"shaders/tex_image.frag.spv",
-		engine.device.device,
-	)
+	chunkShader: vk.ShaderModule
+	chunkShader, err = load_shader_module("shaders/chunk.spv", engine.device.device)
 	if err == nil {
 		log.info("Triangle fragment shader succesfully loaded")
 	} else {
 		log.errorf("Failed to load triangle fragment shader: %s", err)
 	}
-	defer vk.DestroyShaderModule(engine.device.device, triangleFragShader, nil)
-
-	triangleVertexShader: vk.ShaderModule
-	triangleVertexShader, err = load_shader_module("shaders/chunk.vert.spv", engine.device.device)
-	if err == nil {
-		log.info("Triangle vertex shader succesfully loaded")
-	} else {
-		log.errorf("Failed to load triangle vertex shader: %s", err)
-	}
-	defer vk.DestroyShaderModule(engine.device.device, triangleVertexShader, nil)
+	defer vk.DestroyShaderModule(engine.device.device, chunkShader, nil)
 
 	bufferRange: vk.PushConstantRange = {}
 	bufferRange.offset = 0
@@ -2084,7 +2074,7 @@ init_mesh_pipeline :: proc(engine: ^VulkanEngine) -> vk.Result {
 	//use the triangle layout we created
 	pipelineBuilder.pipelineLayout = engine.meshPipelineLayout
 	//connecting the vertex and pixel shaders to the pipeline
-	pipeline_builder_set_shaders(&pipelineBuilder, triangleVertexShader, triangleFragShader)
+	pipeline_builder_set_shaders(&pipelineBuilder, chunkShader, chunkShader)
 	//it will draw triangles
 	pipeline_builder_set_topology(&pipelineBuilder, .TRIANGLE_LIST)
 	//filled triangles
