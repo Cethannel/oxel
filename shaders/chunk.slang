@@ -67,7 +67,7 @@ PSOutput fragmentMain(VOut input) {
   output.color = displayTexture.Sample(input.uv);
 
   if (input.normal.x != 0) {
-      output.color.rgb *= 0.9;
+    output.color.rgb *= 0.9;
   } else if (input.normal.y != 0) {
     output.color.rgb *= 0.85;
   }

@@ -13,6 +13,7 @@
 
       runtimeLibs = with pkgs; [
         SDL2
+        vulkan-loader
         stdenv.cc.cc.lib
         libcxx
         libllvm
@@ -41,9 +42,12 @@
             SDL2.dev
           ]);
 
-        LD_LIBRARY_PATH = "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}";
-
         VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+
+        shellHook = ''
+          SYS_LLVM_LIB=$(ls -d /usr/lib/llvm/*/lib64 2>/dev/null | sort -V | tail -1)
+          export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath runtimeLibs}:/usr/lib64''${SYS_LLVM_LIB:+:$SYS_LLVM_LIB}"
+        '';
       };
 
       vmaSrc = pkgs.fetchFromGitHub {
@@ -219,7 +223,7 @@
 
           postFixup = ''
             						wrapProgram $out/bin/oxel \
-                          --set LD_LIBRARY_PATH "/usr/lib64:${pkgs.lib.makeLibraryPath runtimeLibs}" \
+                          --set LD_LIBRARY_PATH "${pkgs.lib.makeLibraryPath runtimeLibs}:/usr/lib64" \
                           --set VK_LAYER_PATH "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d"
             					'';
         };
@@ -241,6 +245,9 @@
               ]);
 
             shellHook = ''
+              SYS_LLVM_LIB=$(ls -d /usr/lib/llvm/*/lib64 2>/dev/null | sort -V | tail -1)
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath runtimeLibs}:/usr/lib64''${SYS_LLVM_LIB:+:$SYS_LLVM_LIB}"
+
               echo "========================================"
               echo "🚀 Oxel Nushell Development Environment"
               echo "========================================"
