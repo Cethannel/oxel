@@ -650,17 +650,9 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 
 	engine.graphics_queue_family = vkb.device_get_queue_index(engine.device, .Graphics) or_return
 
-	engine.worker_thread_queue =
-		vkb.device_get_queue(engine.device, .Transfer) or_else (vkb.device_get_queue(
-				engine.device,
-				.Graphics,
-			) or_return)
-
-	engine.worker_thread_queue_family =
-		vkb.device_get_queue_index(engine.device, .Transfer) or_else (vkb.device_get_queue_index(
-				engine.device,
-				.Graphics,
-			) or_return)
+	engine.worker_thread_queue, engine.worker_thread_queue_family = device_get_transfer_queue(
+		engine.device,
+	) or_return
 
 	assert(physical_device != nil)
 	assert(physical_device.physical_device != nil)
@@ -2505,4 +2497,24 @@ make_chunk_vertex :: proc(x, y, z: u32, model_idx: u32) -> ChunkVertex {
 	)
 
 	return ChunkVertex{packed_pos = packed, model_index = model_idx}
+}
+
+device_get_transfer_queue :: proc(
+	device: ^vkb.Device,
+) -> (
+	queue: vk.Queue,
+	family: u32,
+	err: vkb.Error = nil,
+) {
+	queue, err = vkb.device_get_queue(device, .Transfer)
+	if err != nil {
+		log.infof("Falling back to graphics queue")
+		queue = vkb.device_get_queue(device, .Graphics) or_return
+		err = nil
+		family = vkb.device_get_queue_index(device, .Graphics) or_return
+		return
+	}
+
+	family = vkb.device_get_queue_index(device, .Transfer) or_return
+	return
 }
