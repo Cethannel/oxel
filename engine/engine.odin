@@ -439,15 +439,14 @@ draw :: proc(engine: ^VulkanEngine) {
 
 	cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
-	engine.draw_extent.height = cast(u32)(cast(f32)(min(
+	engine.draw_extent.height =
+	cast(u32)(cast(f32)(min(
 				engine.swapchain_extent.height,
 				engine.draw_image.imageExtent.height,
 			)) *
 		engine.render_scale)
-	engine.draw_extent.width = cast(u32)(cast(f32)(min(
-				engine.swapchain_extent.width,
-				engine.draw_image.imageExtent.width,
-			)) *
+	engine.draw_extent.width =
+	cast(u32)(cast(f32)(min(engine.swapchain_extent.width, engine.draw_image.imageExtent.width)) *
 		engine.render_scale)
 
 
@@ -632,7 +631,6 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 	assert(vkb.physical_device_enable_extension_features_if_present(physical_device, features12))
 	assert(vkb.physical_device_enable_extension_features_if_present(physical_device, features11))
 
-	//defer vkb.destroy_physical_device(physical_device)
 	fmt.printfln("Selected GPU: %s", physical_device.properties.deviceName)
 	fmt.printfln(
 		"Vulkan version: %d.%d.%d",
@@ -652,12 +650,17 @@ init_vulkan :: proc(engine: ^VulkanEngine) -> vkb.Error {
 
 	engine.graphics_queue_family = vkb.device_get_queue_index(engine.device, .Graphics) or_return
 
-	engine.worker_thread_queue = vkb.device_get_queue(engine.device, .Transfer) or_return
+	engine.worker_thread_queue =
+		vkb.device_get_queue(engine.device, .Transfer) or_else (vkb.device_get_queue(
+				engine.device,
+				.Graphics,
+			) or_return)
 
-	engine.worker_thread_queue_family = vkb.device_get_queue_index(
-		engine.device,
-		.Transfer,
-	) or_return
+	engine.worker_thread_queue_family =
+		vkb.device_get_queue_index(engine.device, .Transfer) or_else (vkb.device_get_queue_index(
+				engine.device,
+				.Graphics,
+			) or_return)
 
 	assert(physical_device != nil)
 	assert(physical_device.physical_device != nil)
