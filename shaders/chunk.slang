@@ -16,7 +16,6 @@ struct ModelEntry {
   float uv_x;
   float3 normal;
   float uv_y;
-  float4 color;
 };
 
 struct PushConstants {
@@ -46,7 +45,7 @@ VOut vertexMain(uint vertexID: SV_VertexID) {
   output.position =
       mul(pushConstants.render_matrix, float4(pos + model.position, 1.0));
 
-  output.color = model.color.rgb;
+  output.color = float3(0.0, 0.0, 0.0);
   output.uv.x = model.uv_x;
   output.uv.y = model.uv_y;
   output.normal = model.normal;

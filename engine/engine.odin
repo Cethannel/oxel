@@ -72,7 +72,6 @@ ModelVertex :: struct {
 	uv_x:     f32,
 	normal:   [3]f32,
 	uv_y:     f32,
-	color:    [4]f32,
 }
 
 AllocatedImage :: struct {
@@ -2115,6 +2114,11 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 	register_cube(engine, "dirt", make_texture("dirt.png"))
 	register_cube(engine, "planks_oak", make_texture("planks_oak.png"))
 	register_cube(engine, "log_oak", make_texture("log_oak_top.png", positive_x = "log_oak.png"))
+	register_cube(
+		engine,
+		"grass_block",
+		make_texture("grass_top.png", bottom = "dirt.png", positive_x = "grass_side.png"),
+	)
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		for &block in engine.blocks {
