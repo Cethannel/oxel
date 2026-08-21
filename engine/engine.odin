@@ -2,6 +2,7 @@ package engine
 
 import "base:runtime"
 import "core:c"
+import "core:dynlib"
 import "core:flags"
 import "core:image"
 import "core:log"
@@ -28,6 +29,8 @@ import vma "../vma/"
 import imgui "../vendor/gitlab.com/L-4/odin-imgui"
 import imgui_sdl2 "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_sdl2"
 import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
+
+import "../modding"
 
 print_resize :: true
 
@@ -235,8 +238,30 @@ init :: proc(engine: ^VulkanEngine) {
 
 	assert(init_worker_thread(engine) == nil, "Failed to start worker thread")
 
+	init_mods(engine)
+
 	engine.render_scale = 1.0
 	engine.is_initialized = true
+}
+
+init_mods :: proc(engine: ^VulkanEngine) {
+	lib, ok := dynlib.load_library("example_mod/example_mod.so")
+	if !ok {
+		fmt.eprintln("Failed to load library:", dynlib.last_error())
+		return
+	}
+	defer dynlib.unload_library(lib)
+
+	// Get a symbol (procedure or variable)
+	addr, found := dynlib.symbol_address(lib, "info_func")
+	if !found {
+		fmt.eprintln("Symbol not found:", dynlib.last_error())
+		return
+	}
+
+	my_func := cast(modding.ModInfoFunc)addr
+	result := my_func(modding.EngineInfo{engine_version = modding.make_version(0, 1, 0)})
+	fmt.println(result)
 }
 
 init_worker_thread :: proc(engine: ^VulkanEngine) -> runtime.Allocator_Error {

@@ -19,3 +19,7 @@ nix_gdb_run: build
 
 gdb_alloc: build
     __NV_PRIME_RENDER_OFFLOAD=1 __VK_LAYER_NV_optimus=NVIDIA_only gdb -ex "source ignore_log_bp.py" -ex 'python IgnoreLogBreakpoint("your_function_name")' --args ./oxel
+
+debug:
+    odin build .
+    raddbg
