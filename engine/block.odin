@@ -171,8 +171,9 @@ Air :: Block {
 }
 
 CubeData :: struct {
-	name:    string,
-	texture: CubeTexture,
+	name:     string,
+	mod_name: string,
+	texture:  CubeTexture,
 }
 
 CubeTexture :: struct {
@@ -208,11 +209,24 @@ make_texture :: proc(
 	}
 }
 
-register_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) {
-	cube := create_cube(engine, name, texture)
+qualify_block_name :: proc(mod_name: string, block_name: string) -> string {
+	return fmt.aprintf("%s:%s", mod_name, block_name)
+}
+
+register_cube :: proc(
+	engine: ^VulkanEngine,
+	mod_name: string,
+	block_name: string,
+	texture: CubeTexture,
+) -> (
+	qualified_name: string,
+) {
+	cube := create_cube(engine, mod_name, block_name, texture)
 	idx := len(engine.blocks)
+	qualified_name = qualify_block_name(mod_name, block_name)
 	append(&engine.blocks, cube)
-	engine.blocks_map[name] = cast(BlockIdx)idx
+	engine.blocks_map[qualified_name] = cast(BlockIdx)idx
+	return
 }
 
 get_neighbor_pos :: proc "contextless" (chunk_pos: [3]u32, face: Face) -> [3]i64 {
@@ -301,19 +315,25 @@ qualify_block_texture_path :: proc(path: string) -> string {
 	return fmt.aprintf("%s/%s", base_block_path, path)
 }
 
-create_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) -> Block {
+create_cube :: proc(
+	engine: ^VulkanEngine,
+	mod_name: string,
+	name: string,
+	texture: CubeTexture,
+) -> Block {
 	block: Block
 
 	data := new(CubeData)
 	data.texture = texture
 	data.name = name
+	data.mod_name = mod_name
 
 	block.userdata = data
 
 	block.vtable.register_textures =
 	proc "c" (block: ^Block, engine: ^VulkanEngine, atlas_builder: ^AtlasBuilder) {
 		context = engine.ctx
-		cube := cast(^CubeData)block.userdata
+		cube: ^CubeData = cast(^CubeData)block.userdata
 
 		for path in cube.texture.paths {
 			already_exists := false
@@ -327,7 +347,12 @@ create_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) -
 			)
 
 			if !already_exists {
-				log.infof("Registering block(%s) texture: %s", cube.name, full_path)
+				log.infof(
+					"Registering block(%s:%s) texture: %s",
+					cube.mod_name,
+					cube.name,
+					full_path,
+				)
 			}
 		}
 	}
@@ -356,7 +381,7 @@ create_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) -
 			}
 		}
 
-		block.model_name = fmt.aprintf("cube/%s", cube_data.name)
+		block.model_name = fmt.aprintf("%s:cube/%s", cube_data.mod_name, cube_data.name)
 
 		log.infof("Registering block: %s", block.model_name)
 
@@ -436,15 +461,6 @@ create_cube :: proc(engine: ^VulkanEngine, name: string, texture: CubeTexture) -
 	}
 
 	return block
-}
-
-@(private = "file")
-@(export, link_name = "register_block")
-register_block_c :: proc "c" (engine: ^VulkanEngine, name: cstring, block: Block) -> BlockIdx {
-	context = engine.ctx
-
-	name := string(name)
-	return register_block(engine, name, block)
 }
 
 register_block :: proc(engine: ^VulkanEngine, name: string, block: Block) -> BlockIdx {

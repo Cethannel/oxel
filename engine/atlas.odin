@@ -1,10 +1,12 @@
 package engine
 
+import "core:fmt"
 import "core:image"
 import "core:image/png"
 import "core:log"
 import "core:math"
 import "core:mem"
+import "core:strings"
 
 import vk "vendor:vulkan"
 
@@ -91,7 +93,9 @@ atlas_builder_build :: proc(
 		}
 	}
 
-	atlas.texture_map["null"] = 0
+	null_name := fmt.aprintf("%s", "null")
+
+	atlas.texture_map[null_name] = 0
 
 	i: u32 = 1
 	for path in ab.textures {
@@ -153,6 +157,19 @@ copy_square_image_scaled :: proc(input: []u32, input_size: u32, output: []u32, o
 }
 
 atlas_destroy :: proc(atlas: ^Atlas, engine: ^VulkanEngine) {
+	to_delete: [dynamic]string
+	defer delete(to_delete)
+	for name, _ in atlas.texture_map {
+		if name != "\x00\x00\x00\x00" {
+			log.infof("Freeing: %q", name)
+			append(&to_delete, name)
+		}
+	}
+
+	for name in to_delete {
+		delete(name)
+	}
+
 	delete(atlas.texture_map)
 	destroy_image(engine, &atlas.image)
 }

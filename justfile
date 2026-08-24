@@ -1,5 +1,6 @@
 build:
     odin build . -debug
+    cd base_mod && odin build . -debug -build-mode:dynamic
 
 run: build
     ./oxel

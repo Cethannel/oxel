@@ -2,7 +2,7 @@ import gdb
 
 class IgnoreLogBreakpoint(gdb.Breakpoint):
     def __init__(self, spec):
-        spec = "/nix/store/73b33yxdvy3fpv2x0l1l17sqa58amsxx-odin-dev-2026-05/share/core/strings/builder.odin:170"
+        spec = "/nix/store/vhz63axfnij1wlfpsfxpcrzgd5rlnj99-odin-dev-2026-07a/share/core/mem/allocators.odin:1866"
         super().__init__(spec, gdb.BP_BREAKPOINT, internal=False)
         self.silent = True
 

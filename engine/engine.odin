@@ -9,6 +9,7 @@ import "core:log"
 import "core:math/linalg"
 import "core:mem"
 import "core:odin/tokenizer"
+import "core:relative"
 import "core:sync"
 import "core:sync/chan"
 import "core:thread"
@@ -29,8 +30,6 @@ import vma "../vma/"
 import imgui "../vendor/gitlab.com/L-4/odin-imgui"
 import imgui_sdl2 "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_sdl2"
 import imgui_vulkan "../vendor/gitlab.com/L-4/odin-imgui/imgui_impl_vulkan"
-
-import "../modding"
 
 print_resize :: true
 
@@ -184,6 +183,7 @@ VulkanEngine :: struct {
 
 	//
 	render_distance:                i32,
+	mods:                           [dynamic]Mod,
 }
 
 ComputePushConstants :: struct {
@@ -217,6 +217,8 @@ init :: proc(engine: ^VulkanEngine) {
 	assert(ok, "Failed to create window")
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {oab.destroy_window(&engine.window)})
 
+	init_mods(engine)
+
 	err := init_vulkan(engine)
 	if err != nil {
 		fmt.panicf("Failed to initalize vulkan: %v", err)
@@ -238,30 +240,24 @@ init :: proc(engine: ^VulkanEngine) {
 
 	assert(init_worker_thread(engine) == nil, "Failed to start worker thread")
 
-	init_mods(engine)
-
 	engine.render_scale = 1.0
 	engine.is_initialized = true
 }
 
 init_mods :: proc(engine: ^VulkanEngine) {
-	lib, ok := dynlib.load_library("example_mod/example_mod.so")
+	base_mod, ok := load_mod(engine, "base_mod/base_mod.so")
 	if !ok {
-		fmt.eprintln("Failed to load library:", dynlib.last_error())
+		log.errorf("Failed to load base mod")
 		return
-	}
-	defer dynlib.unload_library(lib)
-
-	// Get a symbol (procedure or variable)
-	addr, found := dynlib.symbol_address(lib, "info_func")
-	if !found {
-		fmt.eprintln("Symbol not found:", dynlib.last_error())
-		return
+	} else {
+		log.infof("Loaded base mod")
 	}
 
-	my_func := cast(modding.ModInfoFunc)addr
-	result := my_func(modding.EngineInfo{engine_version = modding.make_version(0, 1, 0)})
-	fmt.println(result)
+	append(&engine.mods, base_mod)
+
+	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
+		delete(engine.mods)
+	})
 }
 
 init_worker_thread :: proc(engine: ^VulkanEngine) -> runtime.Allocator_Error {
@@ -2135,19 +2131,18 @@ init_default_data :: proc(engine: ^VulkanEngine) -> vk.Result {
 
 	append(&engine.blocks, Air)
 
-	register_cube(engine, "stone", make_texture("stone.png"))
-	register_cube(engine, "dirt", make_texture("dirt.png"))
-	register_cube(engine, "planks_oak", make_texture("planks_oak.png"))
-	register_cube(engine, "log_oak", make_texture("log_oak_top.png", positive_x = "log_oak.png"))
-	register_cube(
-		engine,
-		"grass_block",
-		make_texture("grass_top.png", bottom = "dirt.png", positive_x = "grass_side.png"),
-	)
+	for &mod in engine.mods {
+		log.infof("Registering blocks for: %s", mod.info.name)
+		mod.info.register_blocks_func(&mod.info, engine)
+	}
 
 	append(&engine.deinitFuncs, proc(engine: ^VulkanEngine) {
 		for &block in engine.blocks {
 			block.vtable.deinit(&block, engine)
+		}
+
+		for name, _ in engine.blocks_map {
+			delete(name)
 		}
 	})
 
