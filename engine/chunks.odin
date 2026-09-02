@@ -42,6 +42,8 @@ chunk_gen :: proc(engine: ^VulkanEngine, chunk: ^Chunk, chunk_pos: [3]i32) {
 					chunk.blocks[idx].block_id = engine.blocks_map["oxel:grass_block"]
 				} else if world_pos.y == 129 && world_pos.x == 0 && world_pos.z == 0 {
 					chunk.blocks[idx].block_id = engine.blocks_map["oxel:log_oak"]
+				} else if world_pos.y == 129 && world_pos.x == 1 && world_pos.z == 0 {
+					chunk.blocks[idx].block_id = engine.blocks_map["oxel:glass"]
 				}
 			}
 		}

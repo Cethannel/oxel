@@ -143,6 +143,7 @@ Block :: struct {
 	vtable:            BlockVtable,
 	model_index_start: ModelIndex,
 	model_name:        string,
+	transparent:       bool,
 }
 
 Air :: Block {
@@ -218,10 +219,12 @@ register_cube :: proc(
 	mod_name: string,
 	block_name: string,
 	texture: CubeTexture,
+	transparent: bool = false,
 ) -> (
 	qualified_name: string,
 ) {
 	cube := create_cube(engine, mod_name, block_name, texture)
+	cube.transparent = transparent
 	idx := len(engine.blocks)
 	qualified_name = qualify_block_name(mod_name, block_name)
 	append(&engine.blocks, cube)
@@ -407,25 +410,31 @@ create_cube :: proc(
 
 		for face in 0 ..< 6 {
 			neighbor_pos, in_chunk := get_neigbor_pos_in_chunk(in_chunk_position, cast(Face)face)
-			if in_chunk {
-				neigbor := chunk.blocks[chunk_calc_index(neighbor_pos)]
-				if neigbor.block_id != 0 {
-					continue
-				}
-			} else {
-				pos_in_neighbor, neighbor_offset, in_neighbor := get_pos_in_neighbor_chunk(
-					in_chunk_position,
-					cast(Face)face,
-				)
-				if in_neighbor {
-					neighbor_chunk_pos := chunk_pos + neighbor_offset
-					neighbor_chunk, ok := &engine.chunks[neighbor_chunk_pos]
-					if ok {
-						neigbor := neighbor_chunk.blocks[chunk_calc_index(pos_in_neighbor)]
-						if neigbor.block_id != 0 {
-							continue
+			{
+				neighbor: ChunkBlock
+				neighbor_ok: bool = false
+				if in_chunk {
+					neighbor = chunk.blocks[chunk_calc_index(neighbor_pos)]
+					neighbor_ok = true
+				} else {
+					pos_in_neighbor, neighbor_offset, in_neighbor := get_pos_in_neighbor_chunk(
+						in_chunk_position,
+						cast(Face)face,
+					)
+					if in_neighbor {
+						neighbor_chunk_pos := chunk_pos + neighbor_offset
+						neighbor_chunk, ok := &engine.chunks[neighbor_chunk_pos]
+						if ok {
+							neighbor = neighbor_chunk.blocks[chunk_calc_index(pos_in_neighbor)]
+							neighbor_ok = true
 						}
 					}
+				}
+
+				neighbor_block := engine.blocks[neighbor.block_id]
+
+				if neighbor.block_id != 0 && !(!block.transparent && neighbor_block.transparent) {
+					continue
 				}
 			}
 

@@ -47,4 +47,6 @@ register_blocks_func :: proc(mod_info: ^oxel.ModInfo, engine: ^oxel.VulkanEngine
 		"grass_block",
 		oxel.make_texture("grass_top.png", bottom = "dirt.png", positive_x = "grass_side.png"),
 	)
+
+	oxel.register_cube(engine, mod_info.name, "glass", oxel.make_texture("glass.png"), true)
 }
