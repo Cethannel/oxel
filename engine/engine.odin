@@ -1718,6 +1718,7 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 
 	push_constants: GPUDrawPushConstants
 	push_constants.worldMatrix = 1.
+	push_constants.modelBuffer = engine.model_buffer_address
 
 	fov := math.to_radians_f32(70.0)
 	aspect := f32(engine.draw_extent.width) / f32(engine.draw_extent.height)
@@ -1728,44 +1729,79 @@ draw_geometry :: proc(engine: ^VulkanEngine, cmd: vk.CommandBuffer) {
 	view_from_world := camera_get_view_matrix(&engine.main_camera)
 
 	for pos, chunk_mesh in engine.chunk_meshes {
-		if chunk_mesh.size == 0 {
-			continue
-		}
-
 		world_from_model := linalg.matrix4_translate_f32(chunk_pos_to_world_pos(pos, f32))
 
 		// MVP in the order the shader expects (usually column-major)
 		mvp := projection_from_view * view_from_world * world_from_model
 
 		push_constants.worldMatrix = mvp
-		push_constants.vertexBuffer = chunk_mesh.meshBuffers.vertexBufferAddress
-		push_constants.modelBuffer = engine.model_buffer_address
 
-		vk.CmdPushConstants(
-			cmd,
-			engine.meshPipelineLayout,
-			{.VERTEX},
-			0,
-			size_of(GPUDrawPushConstants),
-			&push_constants,
-		)
-
-		vk.CmdBindIndexBuffer(
-			cmd,
-			chunk_mesh.meshBuffers.indexBuffer.buffer,
-			0, // Offset
-			.UINT32,
-		)
-
-		vk.CmdDrawIndexed(
-			cmd,
-			chunk_mesh.size,
-			1,
-			0, //Start index
-			0,
-			0,
-		)
+		if (chunk_mesh.solid_size > 0) {
+			push_constants.vertexBuffer = chunk_mesh.solid_mesh_buffers.vertexBufferAddress
+			draw_chunk(
+				engine,
+				cmd,
+				&push_constants,
+				chunk_mesh.solid_mesh_buffers.indexBuffer,
+				chunk_mesh.solid_size,
+			)
+		}
 	}
+
+
+	for pos, chunk_mesh in engine.chunk_meshes {
+		world_from_model := linalg.matrix4_translate_f32(chunk_pos_to_world_pos(pos, f32))
+
+		// MVP in the order the shader expects (usually column-major)
+		mvp := projection_from_view * view_from_world * world_from_model
+
+		push_constants.worldMatrix = mvp
+
+		if (chunk_mesh.transparent_size > 0) {
+			push_constants.vertexBuffer = chunk_mesh.transparent_mesh_buffers.vertexBufferAddress
+			draw_chunk(
+				engine,
+				cmd,
+				&push_constants,
+				chunk_mesh.transparent_mesh_buffers.indexBuffer,
+				chunk_mesh.transparent_size,
+			)
+		}
+	}
+}
+
+draw_chunk :: proc(
+	engine: ^VulkanEngine,
+	cmd: vk.CommandBuffer,
+	push_constants: ^GPUDrawPushConstants,
+	index_buffer: AllocatedBuffer,
+	size: u32,
+) {
+
+	vk.CmdPushConstants(
+		cmd,
+		engine.meshPipelineLayout,
+		{.VERTEX},
+		0,
+		size_of(GPUDrawPushConstants),
+		push_constants,
+	)
+
+	vk.CmdBindIndexBuffer(
+		cmd,
+		index_buffer.buffer,
+		0, // Offset
+		.UINT32,
+	)
+
+	vk.CmdDrawIndexed(
+		cmd,
+		size,
+		1,
+		0, //Start index
+		0,
+		0,
+	)
 }
 
 create_buffer :: proc(

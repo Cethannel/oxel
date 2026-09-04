@@ -65,20 +65,29 @@ ChunkBlock :: struct {
 }
 
 ChunkMesh :: struct {
-	meshBuffers: GPUMeshBuffers,
-	size:        u32,
+	solid_mesh_buffers:       GPUMeshBuffers,
+	solid_size:               u32,
+	transparent_mesh_buffers: GPUMeshBuffers,
+	transparent_size:         u32,
 }
 
 chunk_mesh_delete :: proc(engine: ^VulkanEngine, chunk_mesh: ^ChunkMesh) {
-	destroy_buffer(engine, chunk_mesh.meshBuffers.indexBuffer)
-	destroy_buffer(engine, chunk_mesh.meshBuffers.vertexBuffer)
+	destroy_buffer(engine, chunk_mesh.solid_mesh_buffers.indexBuffer)
+	destroy_buffer(engine, chunk_mesh.solid_mesh_buffers.vertexBuffer)
+	destroy_buffer(engine, chunk_mesh.transparent_mesh_buffers.indexBuffer)
+	destroy_buffer(engine, chunk_mesh.transparent_mesh_buffers.vertexBuffer)
 }
 
 chunk_mesh_gen :: proc(engine: ^VulkanEngine, chunk: ^Chunk, pos: [3]i32) -> ChunkBuilder {
 	chunk_builder: ChunkBuilder = {}
 	chunk_builder_clear(&chunk_builder)
-	reserve(&chunk_builder.indices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 32)
-	reserve(&chunk_builder.vertices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 26)
+	reserve(&chunk_builder.solid_mesh.indices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 32)
+	reserve(&chunk_builder.solid_mesh.vertices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 26)
+	reserve(&chunk_builder.transparent_mesh.indices, CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 32)
+	reserve(
+		&chunk_builder.transparent_mesh.vertices,
+		CHUNK_WIDTH * CHUNK_WIDTH * CHUNK_HEIGHT * 26,
+	)
 
 	for z in u32(0) ..< CHUNK_WIDTH {
 		for y in u32(0) ..< CHUNK_HEIGHT {
@@ -121,16 +130,31 @@ chunk_pos_to_world_pos :: proc {
 	chunk_pos_to_world_pos_int,
 }
 
-ChunkBuilder :: struct {
+MeshBuilder :: struct {
 	vertices:    [dynamic]ChunkVertex,
 	indices:     [dynamic]u32,
 	start_index: u32,
 }
 
+mesh_builder_clear :: proc(mesh_builder: ^MeshBuilder) {
+	clear(&mesh_builder.vertices)
+	clear(&mesh_builder.indices)
+	mesh_builder.start_index = 0
+}
+
+mesh_builder_deinit :: proc(mesh_builder: ^MeshBuilder) {
+	delete(mesh_builder.vertices)
+	delete(mesh_builder.indices)
+}
+
+ChunkBuilder :: struct {
+	solid_mesh:       MeshBuilder,
+	transparent_mesh: MeshBuilder,
+}
+
 chunk_builder_clear :: proc(chunk_builder: ^ChunkBuilder) {
-	clear(&chunk_builder.vertices)
-	clear(&chunk_builder.indices)
-	chunk_builder.start_index = 0
+	mesh_builder_clear(&chunk_builder.solid_mesh)
+	mesh_builder_clear(&chunk_builder.transparent_mesh)
 }
 
 chunk_builder_build_batch :: proc(
@@ -150,84 +174,101 @@ chunk_builder_build_batch :: proc(
 		mesh := &meshes[i]
 		chunk_builder := chunk_builders[i]
 
-		if len(chunk_builder.vertices) == 0 || len(chunk_builder.indices) == 0 {
-			continue
+		//if len(chunk_builder.vertices) == 0 || len(chunk_builder.indices) == 0 {
+		//	continue
+		//}
+
+		if len(chunk_builder.solid_mesh.vertices) != 0 &&
+		   len(chunk_builder.solid_mesh.indices) != 0 {
+			append(
+				&create_upload_infos,
+				buffer_create_upload_info(
+					&mesh.solid_mesh_buffers.vertexBuffer,
+					&mesh.solid_mesh_buffers.vertexBufferAddress,
+					chunk_builder.solid_mesh.vertices[:],
+					.SSBO,
+				),
+				buffer_create_upload_info(
+					&mesh.solid_mesh_buffers.indexBuffer,
+					nil,
+					chunk_builder.solid_mesh.indices[:],
+					.Index,
+				),
+			)
 		}
 
-		append(
-			&create_upload_infos,
-			buffer_create_upload_info(
-				&mesh.meshBuffers.vertexBuffer,
-				&mesh.meshBuffers.vertexBufferAddress,
-				chunk_builder.vertices[:],
-				.SSBO,
-			),
-			buffer_create_upload_info(
-				&mesh.meshBuffers.indexBuffer,
-				nil,
-				chunk_builder.indices[:],
-				.Index,
-			),
-		)
+		if len(chunk_builder.transparent_mesh.vertices) != 0 &&
+		   len(chunk_builder.transparent_mesh.indices) != 0 {
+			append(
+				&create_upload_infos,
+				buffer_create_upload_info(
+					&mesh.transparent_mesh_buffers.vertexBuffer,
+					&mesh.transparent_mesh_buffers.vertexBufferAddress,
+					chunk_builder.transparent_mesh.vertices[:],
+					.SSBO,
+				),
+				buffer_create_upload_info(
+					&mesh.transparent_mesh_buffers.indexBuffer,
+					nil,
+					chunk_builder.transparent_mesh.indices[:],
+					.Index,
+				),
+			)
+		}
 
-		mesh.size = cast(u32)len(chunk_builder.indices)
+		mesh.solid_size = cast(u32)len(chunk_builder.solid_mesh.indices)
+		mesh.transparent_size = cast(u32)len(chunk_builder.transparent_mesh.indices)
 	}
 
 	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
-
-	return
-}
-
-chunk_builder_build :: proc(
-	chunk_builder: ^ChunkBuilder,
-	engine: ^VulkanEngine,
-) -> (
-	mesh: ChunkMesh,
-	err: vk.Result,
-) {
-	create_upload_infos := [?]BufferCreateUploadInfo {
-		buffer_create_upload_info(
-			&mesh.meshBuffers.vertexBuffer,
-			&mesh.meshBuffers.vertexBufferAddress,
-			chunk_builder.vertices[:],
-			.SSBO,
-		),
-		buffer_create_upload_info(
-			&mesh.meshBuffers.indexBuffer,
-			nil,
-			chunk_builder.indices[:],
-			.Index,
-		),
-	}
-	create_and_upload_ssbo(engine, create_upload_infos[:]) or_return
-
-	mesh.size = cast(u32)len(chunk_builder.indices)
 
 	return
 }
 
 chunk_builder_deinit :: proc(chunk_builder: ^ChunkBuilder) {
-	delete(chunk_builder.vertices)
-	delete(chunk_builder.indices)
+	mesh_builder_deinit(&chunk_builder.solid_mesh)
+	mesh_builder_deinit(&chunk_builder.transparent_mesh)
 }
 
-chunk_builder_push_vertex :: proc(chunk_builder: ^ChunkBuilder, vertex: ChunkVertex) {
-	append(&chunk_builder.vertices, vertex)
+chunk_builder_push_solid_vertex :: proc(chunk_builder: ^ChunkBuilder, vertex: ChunkVertex) {
+	append(&chunk_builder.solid_mesh.vertices, vertex)
 }
 
-chunk_builder_push_vertices :: proc(chunk_builder: ^ChunkBuilder, vertices: []ChunkVertex) {
-	append(&chunk_builder.vertices, ..vertices)
+chunk_builder_push_transparent_vertex :: proc(chunk_builder: ^ChunkBuilder, vertex: ChunkVertex) {
+	append(&chunk_builder.transparent_mesh.vertices, vertex)
 }
 
-chunk_builder_push_index :: proc(self: ^ChunkBuilder, index: u32) {
-	self.start_index = max(self.start_index, index + 1)
-	append(&self.indices, index)
+chunk_builder_push_solid_vertices :: proc(chunk_builder: ^ChunkBuilder, vertices: []ChunkVertex) {
+	append(&chunk_builder.solid_mesh.vertices, ..vertices)
 }
 
-chunk_builder_push_indices :: proc(self: ^ChunkBuilder, indices: []u32) {
-	self.start_index = cast(u32)len(self.vertices)
+chunk_builder_push_transparent_vertices :: proc(
+	chunk_builder: ^ChunkBuilder,
+	vertices: []ChunkVertex,
+) {
+	append(&chunk_builder.transparent_mesh.vertices, ..vertices)
+}
 
-	append(&self.indices, ..indices)
+chunk_builder_push_solid_index :: proc(self: ^ChunkBuilder, index: u32) {
+	self.solid_mesh.start_index = max(self.solid_mesh.start_index, index + 1)
+	append(&self.solid_mesh.indices, index)
+}
+
+chunk_builder_push_transparent_index :: proc(self: ^ChunkBuilder, index: u32) {
+	self.transparent_mesh.start_index = max(self.transparent_mesh.start_index, index + 1)
+	append(&self.transparent_mesh.indices, index)
+}
+
+chunk_builder_push_solid_indices :: proc(self: ^ChunkBuilder, indices: []u32) {
+	self.solid_mesh.start_index = cast(u32)len(self.solid_mesh.vertices)
+
+	append(&self.solid_mesh.indices, ..indices)
+}
+
+chunk_builder_push_transparent_indices :: proc(self: ^ChunkBuilder, indices: []u32) {
+	self.transparent_mesh.start_index = cast(u32)len(self.transparent_mesh.vertices)
+
+	append(&self.transparent_mesh.indices, ..indices)
 }
 
 world_to_chunk_pos :: proc(world_pos: [3]i32) -> (chunk_pos: [3]i32, in_chunk_pos: [3]i32) {

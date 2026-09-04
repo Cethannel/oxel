@@ -93,8 +93,9 @@ atlas_builder_build :: proc(
 		}
 	}
 
-	null_name := fmt.aprintf("%s", "null")
+	null_name := strings.clone("null")
 
+	clear(&atlas.texture_map)
 	atlas.texture_map[null_name] = 0
 
 	i: u32 = 1
@@ -160,10 +161,8 @@ atlas_destroy :: proc(atlas: ^Atlas, engine: ^VulkanEngine) {
 	to_delete: [dynamic]string
 	defer delete(to_delete)
 	for name, _ in atlas.texture_map {
-		if name != "\x00\x00\x00\x00" {
-			log.infof("Freeing: %q", name)
-			append(&to_delete, name)
-		}
+		log.infof("Freeing: %q", name)
+		append(&to_delete, name)
 	}
 
 	for name in to_delete {

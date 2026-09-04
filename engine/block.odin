@@ -406,7 +406,12 @@ create_cube :: proc(
 		vertices_count := 0
 		indices: [36]u32 // = make([dynamic]u32, 0, len(baseIndices))
 		indices_count := 0
-		max_index := cast(u32)len(chunk_builder.vertices)
+		max_index: u32
+		if block.transparent {
+			max_index = cast(u32)len(chunk_builder.transparent_mesh.vertices)
+		} else {
+			max_index = cast(u32)len(chunk_builder.solid_mesh.vertices)
+		}
 
 		for face in 0 ..< 6 {
 			neighbor_pos, in_chunk := get_neigbor_pos_in_chunk(in_chunk_position, cast(Face)face)
@@ -458,8 +463,13 @@ create_cube :: proc(
 			}
 		}
 
-		chunk_builder_push_indices(chunk_builder, indices[:indices_count])
-		chunk_builder_push_vertices(chunk_builder, vertices[:vertices_count])
+		if block.transparent {
+			chunk_builder_push_transparent_indices(chunk_builder, indices[:indices_count])
+			chunk_builder_push_transparent_vertices(chunk_builder, vertices[:vertices_count])
+		} else {
+			chunk_builder_push_solid_indices(chunk_builder, indices[:indices_count])
+			chunk_builder_push_solid_vertices(chunk_builder, vertices[:vertices_count])
+		}
 	}
 
 	block.vtable.deinit = proc "c" (block: ^Block, engine: ^VulkanEngine) {

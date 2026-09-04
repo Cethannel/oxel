@@ -69,13 +69,19 @@ worker_thread_proc :: proc(args: ^WorkerThreadArgs) {
 					mesh_pos,
 				)
 				coords[mesh_count] = mesh_pos
-				shrink_dynamic_array(&chunk_builders[mesh_count].indices)
-				shrink_dynamic_array(&chunk_builders[mesh_count].vertices)
+				shrink_dynamic_array(&chunk_builders[mesh_count].solid_mesh.indices)
+				shrink_dynamic_array(&chunk_builders[mesh_count].solid_mesh.vertices)
+				shrink_dynamic_array(&chunk_builders[mesh_count].transparent_mesh.indices)
+				shrink_dynamic_array(&chunk_builders[mesh_count].transparent_mesh.vertices)
 				mesh_count += 1
 
 				if mesh_count >= BATCH_SIZE {
 					break
 				}
+			}
+
+			if mesh_count <= 0 {
+				break mesh
 			}
 
 			meshes, err := chunk_builder_build_batch(chunk_builders[:mesh_count], args.engine)
